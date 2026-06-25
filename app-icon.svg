@@ -1,0 +1,24 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="128" y1="80" x2="900" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16C7CC"/>
+      <stop offset="1" stop-color="#1677FF"/>
+    </linearGradient>
+    <linearGradient id="gem" x1="310" y1="248" x2="720" y2="772" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white"/>
+      <stop offset="1" stop-color="#DDFBFF"/>
+    </linearGradient>
+    <filter id="shadow" x="198" y="174" width="628" height="704" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="30" stdDeviation="28" flood-color="#0B3D82" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#bg)"/>
+  <circle cx="242" cy="220" r="142" fill="white" fill-opacity="0.08"/>
+  <circle cx="860" cy="830" r="210" fill="#0D4FD7" fill-opacity="0.13"/>
+  <g filter="url(#shadow)">
+    <path d="M512 213L772 408L512 603L252 408L512 213Z" fill="url(#gem)"/>
+    <path d="M512 413L772 608L512 803L252 608L512 413Z" fill="white" fill-opacity="0.68"/>
+    <path d="M252 508L512 703L772 508V608L512 803L252 608V508Z" fill="white" fill-opacity="0.9"/>
+  </g>
+  <path d="M512 294L663 408L512 522L361 408L512 294Z" fill="url(#bg)" fill-opacity="0.2"/>
+</svg>

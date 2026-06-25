@@ -23,11 +23,11 @@ export const mockNodes: ProxyNode[] = [
 ];
 
 export const mockGroups: ProxyGroup[] = [
-  { id: "auto", name: "自动选择", type: "URL-Test", icon: "⚡", description: "自动选择延迟最低的节点", nodeIds: mockNodes.map((node) => node.id), currentNodeId: "hk-01", autoTest: true, allowManual: false },
-  { id: "fallback", name: "故障转移", type: "Fallback", icon: "🛡️", description: "节点异常时自动切换", nodeIds: ["hk-01", "jp-02", "sg-01"], currentNodeId: "hk-01", autoTest: true, allowManual: true },
-  { id: "manual", name: "手动切换", type: "Selector", icon: "🌐", description: "手动选择当前使用节点", nodeIds: mockNodes.map((node) => node.id), currentNodeId: "hk-01", autoTest: false, allowManual: true },
-  { id: "direct", name: "全球直连", type: "Direct", icon: "↗", description: "不经过代理直接连接", nodeIds: [], autoTest: false, allowManual: false },
-  { id: "block", name: "广告拦截", type: "Block", icon: "⊘", description: "拦截匹配到的请求", nodeIds: [], autoTest: false, allowManual: false },
+  { id: "auto", name: "自动选择", type: "URL-Test", origin: "managed", icon: "⚡", description: "自动选择延迟最低的节点", nodeIds: mockNodes.map((node) => node.id), currentNodeId: "hk-01", autoTest: true, allowManual: false },
+  { id: "fallback", name: "故障转移", type: "Fallback", origin: "managed", icon: "🛡️", description: "节点异常时自动切换", nodeIds: ["hk-01", "jp-02", "sg-01"], currentNodeId: "hk-01", autoTest: true, allowManual: true },
+  { id: "manual", name: "手动切换", type: "Selector", origin: "managed", icon: "🌐", description: "手动选择当前使用节点", nodeIds: mockNodes.map((node) => node.id), currentNodeId: "hk-01", autoTest: false, allowManual: true },
+  { id: "direct", name: "全球直连", type: "Direct", origin: "local", icon: "↗", description: "不经过代理直接连接", nodeIds: [], autoTest: false, allowManual: false },
+  { id: "block", name: "广告拦截", type: "Block", origin: "local", icon: "⊘", description: "拦截匹配到的请求", nodeIds: [], autoTest: false, allowManual: false },
 ];
 
 export const mockSubscriptions: Subscription[] = [
@@ -87,6 +87,22 @@ export const trafficData = [
   { time: "10:00", download: 286, upload: 128 }, { time: "12:00", download: 477, upload: 196 },
   { time: "14:00", download: 278, upload: 113 }, { time: "16:00", download: 365, upload: 176 },
   { time: "18:00", download: 181, upload: 61 },
+];
+
+export const proxyGroupTrafficData: Array<Record<string, number | string>> = [
+  { time: "18:00", auto: 74, fallback: 18, manual: 44, direct: 29, block: 3 },
+  { time: "20:00", auto: 164, fallback: 37, manual: 92, direct: 54, block: 8 },
+  { time: "22:00", auto: 95, fallback: 29, manual: 71, direct: 39, block: 6 },
+  { time: "00:00", auto: 221, fallback: 45, manual: 132, direct: 78, block: 12 },
+  { time: "02:00", auto: 126, fallback: 34, manual: 89, direct: 46, block: 5 },
+  { time: "04:00", auto: 148, fallback: 42, manual: 103, direct: 55, block: 7 },
+  { time: "06:00", auto: 91, fallback: 24, manual: 64, direct: 38, block: 4 },
+  { time: "08:00", auto: 58, fallback: 16, manual: 39, direct: 28, block: 3 },
+  { time: "10:00", auto: 172, fallback: 51, manual: 118, direct: 66, block: 9 },
+  { time: "12:00", auto: 298, fallback: 79, manual: 188, direct: 91, block: 14 },
+  { time: "14:00", auto: 174, fallback: 48, manual: 112, direct: 69, block: 7 },
+  { time: "16:00", auto: 232, fallback: 68, manual: 158, direct: 84, block: 11 },
+  { time: "18:00", auto: 112, fallback: 22, manual: 62, direct: 41, block: 4 },
 ];
 
 export const initialSettings: AppSettings = {

@@ -95,6 +95,7 @@ export const useAppStore = create<AppState>()(
       selectGroup: (selectedGroupId) => set({ selectedGroupId }),
       addNode: (node) => set((state) => ({ nodes: [node, ...state.nodes] })),
       addGroup: (group) => set((state) => ({ groups: [...state.groups, group] })),
+      updateGroup: (group) => set((state) => ({ groups: state.groups.map((item) => (item.id === group.id ? group : item)) })),
       refreshLatencies: () =>
         set((state) => ({
           nodes: state.nodes.map((node) => ({

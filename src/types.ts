@@ -18,11 +18,13 @@ export interface ProxyNode {
 }
 
 export type ProxyGroupType = "Selector" | "Fallback" | "URL-Test" | "Load-Balance" | "Direct" | "Block";
+export type ProxyGroupOrigin = "managed" | "local";
 
 export interface ProxyGroup {
   id: string;
   name: string;
   type: ProxyGroupType;
+  origin: ProxyGroupOrigin;
   icon: string;
   description: string;
   nodeIds: string[];
@@ -139,6 +141,7 @@ export interface AppState {
   selectGroup: (groupId: string) => void;
   addNode: (node: ProxyNode) => void;
   addGroup: (group: ProxyGroup) => void;
+  updateGroup: (group: ProxyGroup) => void;
   refreshLatencies: () => void;
   addSubscription: (subscription: Subscription) => void;
   updateSubscription: (subscription: Subscription) => void;

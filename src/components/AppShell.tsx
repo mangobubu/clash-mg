@@ -4,14 +4,13 @@ import {
   BellOutlined,
   CloseOutlined,
   CloudDownloadOutlined,
-  CompressOutlined,
   DashboardOutlined,
   FileTextOutlined,
   HomeOutlined,
+  LeftOutlined,
   LineChartOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
   MoonOutlined,
+  RightOutlined,
   SearchOutlined,
   SettingOutlined,
   ShrinkOutlined,
@@ -141,8 +140,10 @@ export function AppShell() {
             <Button
               type="text"
               className="sidebar-collapse"
-              icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              icon={sidebarCollapsed ? <RightOutlined /> : <LeftOutlined />}
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              data-tauri-drag-region="false"
             />
           </Tooltip>
         </div>
@@ -177,13 +178,13 @@ export function AppShell() {
           <kbd>⌘K</kbd>
         </button>
         <Segmented
+          className="theme-toggle"
           size="large"
           value={themeMode}
           onChange={(value) => setThemeMode(value as ThemeMode)}
           options={[
             { value: "light", icon: <SunOutlined />, label: "" },
             { value: "dark", icon: <MoonOutlined />, label: "" },
-            { value: "system", icon: <CompressOutlined />, label: "" },
           ]}
         />
         <Popover content={notificationContent} trigger="click" placement="bottomRight">

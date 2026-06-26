@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "允许前端读写本地应用数据，并通过 Rust 后端访问 Mihomo 外部控制器。",
+          "type": "string",
+          "const": "allow-app-backend",
+          "markdownDescription": "允许前端读写本地应用数据，并通过 Rust 后端访问 Mihomo 外部控制器。"
+        },
+        {
           "description": "Enables the open_connection_detail_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-connection-detail-window",

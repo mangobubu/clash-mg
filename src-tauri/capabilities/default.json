@@ -5,6 +5,7 @@
   "windows": ["main", "connections-window", "connection-detail-*"],
   "permissions": [
     "core:default",
+    "allow-app-backend",
     "allow-open-connections-window",
     "allow-open-connection-detail-window",
     "core:window:allow-close",

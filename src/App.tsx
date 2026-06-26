@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { App as AntApp, ConfigProvider, Spin, theme } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -67,8 +67,15 @@ function ConnectionsRoute() {
 }
 
 export default function App() {
-  const { themeMode, accent, settings } = useAppStore();
+  const { themeMode, accent, settings, hydrated, initializeAppState } = useAppStore();
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const initializedRef = useRef(false);
+
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    void initializeAppState();
+  }, [initializeAppState]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -83,14 +90,6 @@ export default function App() {
     document.documentElement.style.setProperty("--accent", accent);
     document.documentElement.style.setProperty("--ui-scale", String(Number.parseInt(String(settings.uiScale ?? "100%"), 10) / 100));
   }, [accent, isDark, settings.uiScale]);
-
-  useEffect(() => {
-    const syncPersistedState = (event: StorageEvent) => {
-      if (event.key === "clash-mg-prototype-state") void useAppStore.persist.rehydrate();
-    };
-    window.addEventListener("storage", syncPersistedState);
-    return () => window.removeEventListener("storage", syncPersistedState);
-  }, []);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -133,7 +132,7 @@ export default function App() {
       <AntApp>
         <HashRouter>
           <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>
-            <Routes>
+            {!hydrated ? <div className="route-loading"><Spin size="large" /></div> : <Routes>
               <Route path="connections-window" element={<div className="standalone-window-page"><ConnectionsPage /></div>} />
               <Route path="connection-detail/:id" element={<ConnectionDetailWindowPage />} />
               <Route element={<AppShell />}>
@@ -148,7 +147,7 @@ export default function App() {
                 <Route path="settings" element={<Navigate to="/settings/general" replace />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
-            </Routes>
+            </Routes>}
           </Suspense>
         </HashRouter>
       </AntApp>

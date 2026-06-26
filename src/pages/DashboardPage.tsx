@@ -8,17 +8,10 @@ import {
 } from "@ant-design/icons";
 import { Flex, Radio, Switch, Typography } from "antd";
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
-import { proxyGroupTrafficData, trafficData } from "../mocks/data";
 import { useAppStore } from "../store/useAppStore";
 import { CompactCopy, Panel, StatusDot } from "../components/Common";
 
 const { Text, Title } = Typography;
-
-const realtimeTraffic = {
-  download: { speed: "12.45", total: "13.64", share: "73.3%" },
-  upload: { speed: "2.34", total: "4.98", share: "26.7%" },
-  total: "18.62",
-};
 
 const trafficUnits = ["B", "KB", "MB", "GB", "TB"];
 const proxyGroupLineColors = ["#9b5de5", "#f15bb5", "#f59e0b", "#14b8a6", "#64748b", "#ef4444", "#8b5cf6"];
@@ -49,22 +42,23 @@ export function DashboardPage() {
   const {
     connected,
     groups,
+    runtime,
     settings,
+    trafficHistory,
     updateSetting,
   } = useAppStore();
+  const realtimeTraffic = {
+    download: { total: runtime.downloadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
+    upload: { total: runtime.uploadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
+    total: runtime.downloadTotal === "0 B" && runtime.uploadTotal === "0 B" ? "0 B" : `${runtime.downloadTotal} / ${runtime.uploadTotal}`,
+  };
   const proxyGroupSeries = groups.map((group, index) => ({
     id: group.id,
     key: getProxyGroupTrafficKey(group.id),
     name: group.name,
     color: proxyGroupLineColors[index % proxyGroupLineColors.length],
   }));
-  const trafficChartData = trafficData.map((item, index) => {
-    const groupTraffic = proxyGroupTrafficData[index] ?? {};
-    return proxyGroupSeries.reduce<Record<string, number | string>>(
-      (point, series) => ({ ...point, [series.key]: Number(groupTraffic[series.id] ?? 0) }),
-      { ...item },
-    );
-  });
+  const trafficChartData = trafficHistory;
   const isTrafficSeriesVisible = (key: string) => !hiddenTrafficSeries[key];
   const visibleTrafficSeriesKeys = [
     ...(isTrafficSeriesVisible(downloadSeriesKey) ? [downloadSeriesKey] : []),
@@ -92,10 +86,10 @@ export function DashboardPage() {
           >
             <div className="connection-summary">
               <div className="connection-main">
-                <div className="connection-details">
-                  <div className="ip-details">
-                    <dl><dt>本地 IP</dt><dd>192.168.1.100 <CompactCopy text="192.168.1.100" /></dd></dl>
-                    <dl><dt>出口 IP</dt><dd>103.162.245.76 <CompactCopy text="103.162.245.76" /></dd></dl>
+                  <div className="connection-details">
+                    <div className="ip-details">
+                    <dl><dt>控制器</dt><dd>{runtime.controllerUrl} <CompactCopy text={runtime.controllerUrl} /></dd></dl>
+                    <dl><dt>核心版本</dt><dd>{runtime.coreVersion}</dd></dl>
                   </div>
                 </div>
                 <div className="quick-toggles">
@@ -110,9 +104,9 @@ export function DashboardPage() {
                   <Text type="secondary">当前传输</Text>
                 </div>
                 <div className="traffic-metrics">
-                  <TrafficMetric icon={<ArrowDownOutlined />} label="下载速度" value={realtimeTraffic.download.speed} unit="MB/s" tone="green" />
-                  <TrafficMetric icon={<ArrowUpOutlined />} label="上传速度" value={realtimeTraffic.upload.speed} unit="MB/s" tone="blue" />
-                  <TrafficMetric icon={<GlobalOutlined />} label="总流量" value={realtimeTraffic.total} unit="GB" tone="slate" />
+                  <TrafficMetric icon={<ArrowDownOutlined />} label="下载总量" value={realtimeTraffic.download.total} unit="" tone="green" />
+                  <TrafficMetric icon={<ArrowUpOutlined />} label="上传总量" value={realtimeTraffic.upload.total} unit="" tone="blue" />
+                  <TrafficMetric icon={<GlobalOutlined />} label="控制器" value={runtime.controllerConnected ? "已连接" : "未连接"} unit="" tone="slate" />
                 </div>
                 <div className="traffic-distribution">
                   <div className="traffic-share">
@@ -121,14 +115,14 @@ export function DashboardPage() {
                       <span className="upload" style={{ width: realtimeTraffic.upload.share }} />
                     </div>
                     <div className="traffic-share-labels">
-                      <span><i className="green-dot" />下载 {realtimeTraffic.download.share}</span>
-                      <span><i className="blue-dot" />上传 {realtimeTraffic.upload.share}</span>
+                      <span><i className="green-dot" />下载 {realtimeTraffic.download.total}</span>
+                      <span><i className="blue-dot" />上传 {realtimeTraffic.upload.total}</span>
                     </div>
                   </div>
                   <div className="distribution-list">
-                    <dl><dt><i className="green-dot" /> 下载流量</dt><dd>{realtimeTraffic.download.total} GB <span>{realtimeTraffic.download.share}</span></dd></dl>
-                    <dl><dt><i className="blue-dot" /> 上传流量</dt><dd>{realtimeTraffic.upload.total} GB <span>{realtimeTraffic.upload.share}</span></dd></dl>
-                    <dl><dt>合计</dt><dd>{realtimeTraffic.total} GB</dd></dl>
+                    <dl><dt><i className="green-dot" /> 下载流量</dt><dd>{realtimeTraffic.download.total} <span>{runtime.lastSync}</span></dd></dl>
+                    <dl><dt><i className="blue-dot" /> 上传流量</dt><dd>{realtimeTraffic.upload.total} <span>{runtime.lastSync}</span></dd></dl>
+                    <dl><dt>控制器</dt><dd>{runtime.controllerUrl}</dd></dl>
                   </div>
                 </div>
               </div>

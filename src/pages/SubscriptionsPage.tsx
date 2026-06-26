@@ -123,12 +123,12 @@ export function SubscriptionsPage() {
     }
     addSubscription({ id: crypto.randomUUID(), name: `快速订阅 ${subscriptions.length + 1}`, type: "HTTP", url: quickUrl.trim(), nodeCount: 0, lastUpdated: "尚未更新", updateInterval: 12, status: "正常", enabled: true, autoUpdate: true, proxyUpdate: true, allowOverride: false, usedTraffic: "0 B", expiresAt: "未知", tags: ["快速导入"] });
     setQuickUrl("");
-    message.success("订阅链接已解析并添加");
+    message.success("订阅链接已保存，请将其写入 Mihomo 配置或作为 Provider 刷新");
   };
 
   const confirmDelete = (subscription: Subscription) => Modal.confirm({
     title: `删除订阅“${subscription.name}”？`,
-    content: "此操作仅删除 Mock 数据，可通过重置浏览器存储恢复。",
+    content: "此操作会删除当前本地保存的订阅记录。",
     okText: "删除", cancelText: "取消", okButtonProps: { danger: true },
     onOk: () => { deleteSubscription(subscription.id); if (detail?.id === subscription.id) setDetail(null); },
   });
@@ -144,7 +144,7 @@ export function SubscriptionsPage() {
     {
       title: "操作", key: "actions", width: 150, fixed: "right",
       render: (_, record) => <Space onClick={(event) => event.stopPropagation()}>
-        <Button type="text" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([record.id]); message.success("订阅更新完成"); }} aria-label="立即更新" />
+        <Button type="text" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([record.id]); message.success("已请求刷新订阅"); }} aria-label="立即更新" />
         <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)} aria-label="编辑订阅" />
         <Dropdown menu={{ items: [{ key: "copy", icon: <CopyOutlined />, label: "复制订阅" }, { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true }], onClick: ({ key }) => key === "delete" ? confirmDelete(record) : navigator.clipboard.writeText(record.url).then(() => message.success("订阅链接已复制")) }}>
           <Button type="text" icon={<MoreOutlined />} aria-label="更多操作" />
@@ -155,14 +155,14 @@ export function SubscriptionsPage() {
 
   return (
     <div className="page-stack subscriptions-page">
-      <PageHeader title="订阅" description="管理订阅源、更新配置并同步节点。" actions={<><Button icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions(selectedIds.length ? selectedIds : undefined); message.success(selectedIds.length ? `已更新 ${selectedIds.length} 项订阅` : "批量更新完成"); }}>批量更新</Button><Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增订阅</Button></>} />
+      <PageHeader title="订阅" description="管理订阅源、更新配置并同步节点。" actions={<><Button icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions(selectedIds.length ? selectedIds : undefined); message.success(selectedIds.length ? `已请求刷新 ${selectedIds.length} 项订阅` : "已请求批量刷新"); }}>批量更新</Button><Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增订阅</Button></>} />
 
       <Panel className="quick-import-panel">
         <div className="quick-import-icon"><LinkOutlined /></div>
         <div className="quick-import-content">
           <Flex align="center" gap={10}><Title level={3}>快速导入订阅链接</Title><Tag color="green">推荐</Tag></Flex>
           <Flex gap={12}><Input size="large" placeholder="粘贴订阅链接，例如：https://sub.example.com/xxxx" value={quickUrl} onChange={(event) => setQuickUrl(event.target.value)} onPressEnter={importQuickLink} /><Button type="primary" size="large" onClick={importQuickLink}>导入链接</Button></Flex>
-          <Text type="secondary">粘贴订阅链接，系统将自动解析并创建订阅，快速开始使用。</Text>
+          <Text type="secondary">粘贴订阅链接后会保存为本地订阅记录；已配置到 Mihomo 的 Provider 会在刷新时同步真实节点。</Text>
         </div>
       </Panel>
 
@@ -210,7 +210,7 @@ export function SubscriptionsPage() {
           </Panel>
           <Panel title="3. 解析 / 输出设置" className="modal-section"><div className="form-grid two-columns"><Form.Item label="配置格式" name="format"><Select options={[{ label: "Clash Meta (YAML)", value: "Clash Meta (YAML)" }, { label: "Clash Premium", value: "Clash Premium" }, { label: "通用 Base64", value: "Base64" }]} /></Form.Item><Form.Item label="标签 / 分组" name="tags"><Input placeholder="例如：机场, 国内, 海外" /></Form.Item><Form.Item label="节点命名规则（可选）" name="nodeNameRule"><Input placeholder="例如：{name}-{server}" /></Form.Item><Form.Item label="导入前预览" name="preview" valuePropName="checked"><Switch /></Form.Item></div></Panel>
           <HintBar>带 * 的字段为必填项，其他均为可选项。</HintBar>
-          <Button icon={<ReloadOutlined />} onClick={() => message.success("订阅测试成功，预计可导入 128 个节点")}>测试订阅</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => message.info("订阅可用性以 Mihomo Provider 刷新结果为准")}>测试订阅</Button>
         </Form>
       </Modal>
 
@@ -219,7 +219,7 @@ export function SubscriptionsPage() {
           <Flex justify="space-between" align="center"><Title level={3}>{detail.name}</Title><StatusDot status={detail.status === "正常" ? "success" : "error"}>{detail.status}</StatusDot></Flex>
           <Descriptions column={1} labelStyle={{ width: 100 }} items={[{ key: "url", label: "订阅地址", children: detail.url }, { key: "nodes", label: "节点数量", children: `${detail.nodeCount} 个` }, { key: "updated", label: "最后更新", children: detail.lastUpdated }, { key: "interval", label: "更新时间", children: detail.updateInterval ? `${detail.updateInterval} 小时` : "手动" }, { key: "traffic", label: "使用流量", children: detail.usedTraffic }, { key: "expires", label: "到期时间", children: detail.expiresAt }, { key: "format", label: "配置格式", children: "Clash Meta (YAML)" }]} />
           <Panel title="使用状态" className="detail-switches"><Flex vertical gap={16}><Flex justify="space-between">启用订阅<Switch checked={detail.enabled} onChange={(enabled) => { const next = { ...detail, enabled, status: enabled ? "正常" as const : "已禁用" as const }; updateSubscription(next); setDetail(next); }} /></Flex><Flex justify="space-between">自动更新<Switch checked={detail.autoUpdate} onChange={(autoUpdate) => { const next = { ...detail, autoUpdate }; updateSubscription(next); setDetail(next); }} /></Flex><Flex justify="space-between">代理更新<Switch checked={detail.proxyUpdate} onChange={(proxyUpdate) => { const next = { ...detail, proxyUpdate }; updateSubscription(next); setDetail(next); }} /></Flex></Flex></Panel>
-          <Flex gap={12}><Button block icon={<EditOutlined />} onClick={() => { openEdit(detail); setDetail(null); }}>编辑订阅</Button><Button block type="primary" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([detail.id]); message.success("订阅已更新"); }}>立即更新</Button></Flex>
+          <Flex gap={12}><Button block icon={<EditOutlined />} onClick={() => { openEdit(detail); setDetail(null); }}>编辑订阅</Button><Button block type="primary" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([detail.id]); message.success("已请求刷新订阅"); }}>立即更新</Button></Flex>
         </div>}
       </Drawer>
     </div>

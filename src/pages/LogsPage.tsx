@@ -28,7 +28,7 @@ export function LogsPage() {
   const [showDebug, setShowDebug] = useState(false);
   const [paused, setPaused] = useState(false);
   const [detail, setDetail] = useState<LogEntry | null>(null);
-  const { logs, clearLogs } = useAppStore();
+  const { logs, clearLogs, refreshRuntimeData } = useAppStore();
 
   const filtered = useMemo(() => logs.filter((entry) =>
     `${entry.content}${entry.source}`.toLowerCase().includes(search.toLowerCase())
@@ -63,7 +63,7 @@ export function LogsPage() {
 
   return (
     <div className="page-stack logs-page">
-      <PageHeader title="日志" description="查看运行日志、连接事件与系统状态，便于排查问题与监控运行情况。" actions={<><Button icon={<ExportOutlined />} onClick={exportLogs}>导出日志</Button><Button type="primary" danger icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: "清空全部日志？", content: "此操作会清除当前 Mock 日志列表。", okText: "清空", cancelText: "取消", okButtonProps: { danger: true }, onOk: clearLogs })}>清空日志</Button></>} />
+      <PageHeader title="日志" description="查看运行日志、连接事件与系统状态，便于排查问题与监控运行情况。" actions={<><Button icon={<ExportOutlined />} onClick={exportLogs}>导出日志</Button><Button type="primary" danger icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: "清空全部日志？", content: "此操作会清除当前本地日志记录。", okText: "清空", cancelText: "取消", okButtonProps: { danger: true }, onOk: clearLogs })}>清空日志</Button></>} />
       <Panel className="logs-panel">
         <div className="filter-bar logs-filter-bar">
           <Input prefix={<SearchOutlined />} placeholder="搜索日志内容 / 进程 / 模块" value={search} onChange={(event) => setSearch(event.target.value)} allowClear />
@@ -71,7 +71,7 @@ export function LogsPage() {
           <Select value={source} onChange={setSource} options={[{ label: "全部来源", value: "all" }, ...Array.from(new Set(logs.map((entry) => entry.source))).map((value) => ({ label: value, value }))]} />
           <Flex align="center" gap={8} className="filter-switch"><Text>自动滚动</Text><Switch checked={autoScroll} onChange={setAutoScroll} /></Flex>
           <Flex align="center" gap={8} className="filter-switch"><Text>显示调试</Text><Switch checked={showDebug} onChange={setShowDebug} /></Flex>
-          <Button icon={<ReloadOutlined />} onClick={() => message.success("日志已刷新")} aria-label="刷新日志" />
+          <Button icon={<ReloadOutlined />} onClick={() => { void refreshRuntimeData(); message.success("已请求刷新运行日志"); }} aria-label="刷新日志" />
           <Button icon={paused ? <PlayCircleOutlined /> : <PauseOutlined />} onClick={() => { setPaused(!paused); message.info(paused ? "已继续接收日志" : "已暂停接收日志"); }} aria-label={paused ? "继续" : "暂停"} />
         </div>
         {paused && <div className="paused-banner"><PauseOutlined /> 日志流已暂停，现有内容仍可筛选和查看。</div>}

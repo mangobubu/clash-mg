@@ -1,0 +1,202 @@
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub type SettingsMap = HashMap<String, Value>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyNode {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
+    pub protocol: String,
+    pub address: String,
+    pub port: u16,
+    pub latency: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cipher: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialer_proxy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub origin: String,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
+    pub origin: String,
+    pub icon: String,
+    pub description: String,
+    pub node_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_node_id: Option<String>,
+    pub auto_test: bool,
+    pub allow_manual: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subscription {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub subscription_type: String,
+    pub url: String,
+    pub node_count: usize,
+    pub last_updated: String,
+    pub update_interval: u32,
+    pub status: String,
+    pub enabled: bool,
+    pub auto_update: bool,
+    pub proxy_update: bool,
+    pub allow_override: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub used_traffic: String,
+    pub expires_at: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingRule {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub rule_type: String,
+    pub content: String,
+    pub policy: String,
+    pub source: String,
+    pub enabled: bool,
+    pub no_resolve: bool,
+    pub wildcard: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Connection {
+    pub id: String,
+    pub app: String,
+    pub process: String,
+    pub icon: String,
+    pub target: String,
+    pub ip: String,
+    pub protocol: String,
+    pub upload: String,
+    pub download: String,
+    pub duration: String,
+    pub rule: String,
+    pub policy: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogEntry {
+    pub id: String,
+    pub time: String,
+    pub level: String,
+    pub source: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    pub id: String,
+    pub time: String,
+    pub kind: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideItem {
+    pub id: String,
+    pub match_type: String,
+    #[serde(rename = "match")]
+    pub item_match: String,
+    pub operation: String,
+    pub field: String,
+    pub value: String,
+    pub strategy: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficPoint {
+    pub time: String,
+    pub download: f64,
+    pub upload: f64,
+    #[serde(flatten)]
+    pub proxy_groups: HashMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInfo {
+    pub controller_connected: bool,
+    pub controller_url: String,
+    pub core_version: String,
+    pub upload_total: String,
+    pub download_total: String,
+    pub last_sync: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelayResult {
+    pub latency: u32,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSnapshot {
+    pub theme_mode: ThemeMode,
+    pub accent: String,
+    pub sidebar_collapsed: bool,
+    pub connected: bool,
+    pub selected_node_id: String,
+    pub selected_group_id: String,
+    pub nodes: Vec<ProxyNode>,
+    pub groups: Vec<ProxyGroup>,
+    pub subscriptions: Vec<Subscription>,
+    pub rules: Vec<RoutingRule>,
+    pub connections: Vec<Connection>,
+    pub logs: Vec<LogEntry>,
+    pub activities: Vec<Activity>,
+    pub settings: SettingsMap,
+    pub domain_overrides: Vec<OverrideItem>,
+    pub request_overrides: Vec<OverrideItem>,
+    pub response_overrides: Vec<OverrideItem>,
+    pub traffic_history: Vec<TrafficPoint>,
+    pub runtime: RuntimeInfo,
+}

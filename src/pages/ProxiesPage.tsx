@@ -145,7 +145,7 @@ export function ProxiesPage() {
   const [simulatedLatencies, setSimulatedLatencies] = useState<Record<string, number>>({});
   const testTimerRefs = useRef<number[]>([]);
   const [groupForm] = Form.useForm<GroupFormValues>();
-  const { nodes, groups, selectNode, addGroup, updateGroup } = useAppStore();
+  const { nodes, groups, selectNode, addGroup, updateGroup, testNodeLatency } = useAppStore();
   const activeNodeGroup = groups.find((group) => group.id === nodePickerGroupId);
   const isAutoTestGroup = activeNodeGroup?.type === "URL-Test";
   const groupSelectableNodes = nodes.slice(0, 8);
@@ -219,23 +219,25 @@ export function ProxiesPage() {
 
     testableNodes.forEach((node) => {
       const timer = window.setTimeout(() => {
-        const jitter = 0.72 + Math.random() * 0.58;
-        const latency = Math.max(18, Math.round(node.latency * jitter + Math.random() * 18));
-        testedResults.push({ node, latency });
-        setSimulatedLatencies((latencies) => ({ ...latencies, [node.id]: latency }));
-        setTestingNodeIds((ids) => ids.filter((id) => id !== node.id));
+        void testNodeLatency(node.id).then((result) => {
+          const latency = result.available ? result.latency : Number.POSITIVE_INFINITY;
+          testedResults.push({ node, latency });
+          if (result.available) setSimulatedLatencies((latencies) => ({ ...latencies, [node.id]: result.latency }));
+          setTestingNodeIds((ids) => ids.filter((id) => id !== node.id));
 
-        if (testedResults.length === testableNodes.length) {
-          testTimerRefs.current = [];
-          if (activeNodeGroup?.type === "URL-Test") {
-            const bestNode = testedResults.reduce((best, item) => item.latency < best.latency ? item : best);
-            selectNode(bestNode.node.id, activeNodeGroup.id);
-            message.success(`已自动选择最低延迟节点 ${bestNode.node.name}`);
-          } else {
-            message.success("测速完成");
+          if (testedResults.length === testableNodes.length) {
+            testTimerRefs.current = [];
+            const reachableResults = testedResults.filter((item) => Number.isFinite(item.latency));
+            if (activeNodeGroup?.type === "URL-Test" && reachableResults.length) {
+              const bestNode = reachableResults.reduce((best, item) => item.latency < best.latency ? item : best);
+              selectNode(bestNode.node.id, activeNodeGroup.id);
+              message.success(`已自动选择最低延迟节点 ${bestNode.node.name}`);
+            } else {
+              message.success("测速完成");
+            }
           }
-        }
-      }, 450 + Math.random() * 1150);
+        });
+      }, 320);
       testTimerRefs.current.push(timer);
     });
   };

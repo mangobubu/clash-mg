@@ -1,6 +1,6 @@
 export type ThemeMode = "light" | "dark" | "system";
 
-export type NodeProtocol = "Shadowsocks" | "VMess" | "Trojan" | "Hysteria2";
+export type NodeProtocol = string;
 export type NodeOrigin = "managed" | "local";
 
 export interface ProxyNode {
@@ -116,10 +116,33 @@ export interface OverrideItem {
   enabled: boolean;
 }
 
+export interface TrafficPoint {
+  time: string;
+  download: number;
+  upload: number;
+  [key: string]: number | string;
+}
+
+export interface RuntimeInfo {
+  controllerConnected: boolean;
+  controllerUrl: string;
+  coreVersion: string;
+  uploadTotal: string;
+  downloadTotal: string;
+  lastSync: string;
+  error?: string;
+}
+
+export interface DelayResult {
+  latency: number;
+  available: boolean;
+  message?: string;
+}
+
 export type SettingValue = string | number | boolean | string[];
 export type AppSettings = Record<string, SettingValue>;
 
-export interface AppState {
+export interface AppData {
   themeMode: ThemeMode;
   accent: string;
   sidebarCollapsed: boolean;
@@ -137,6 +160,15 @@ export interface AppState {
   domainOverrides: OverrideItem[];
   requestOverrides: OverrideItem[];
   responseOverrides: OverrideItem[];
+  trafficHistory: TrafficPoint[];
+  runtime: RuntimeInfo;
+}
+
+export interface AppState extends AppData {
+  hydrated: boolean;
+  backendAvailable: boolean;
+  initializeAppState: () => Promise<void>;
+  refreshRuntimeData: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => void;
   setAccent: (color: string) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -146,6 +178,7 @@ export interface AppState {
   addNode: (node: ProxyNode) => void;
   updateNode: (node: ProxyNode) => void;
   updateNodeLatency: (nodeId: string, latency: number, available?: boolean) => void;
+  testNodeLatency: (nodeId: string) => Promise<DelayResult>;
   addGroup: (group: ProxyGroup) => void;
   updateGroup: (group: ProxyGroup) => void;
   refreshLatencies: () => void;

@@ -90,7 +90,7 @@ const getNodeContinent = (node: ProxyNode): Exclude<ContinentFilter, "all"> => {
 };
 
 export function NodesPage() {
-  const { nodes, groups, addNode, updateNode, updateGroup, updateNodeLatency } = useAppStore();
+  const { nodes, groups, addNode, updateNode, updateGroup, testNodeLatency } = useAppStore();
   const [search, setSearch] = useState("");
   const [protocolFilter, setProtocolFilter] = useState<NodeProtocol | "all">("all");
   const [continentFilter, setContinentFilter] = useState<ContinentFilter>("all");
@@ -232,7 +232,7 @@ export function NodesPage() {
       message.warning("请粘贴 ss://、vmess://、trojan:// 或 hysteria2:// 节点链接");
       return;
     }
-    message.info("节点链接解析入口已预留，后续将由 Rust 后端实现");
+    message.info("节点链接解析尚未写入 Mihomo 配置，请先在表单中保存节点");
   };
 
   const syncNodeProxyGroups = (nodeId: string, proxyGroupIds: string[]) => {
@@ -330,17 +330,19 @@ export function NodesPage() {
 
     candidates.forEach((node, index) => {
       const timer = window.setTimeout(() => {
-        const reachable = Math.random() > 0.08;
-        const baseLatency = node.latency > 0 ? node.latency : 120;
-        const latency = reachable ? Math.max(18, Math.round(baseLatency * (0.7 + Math.random() * 0.75) + Math.random() * 24)) : Math.max(baseLatency, 260);
-        updateNodeLatency(node.id, latency, reachable);
-        setTestingNodeIds((ids) => ids.filter((id) => id !== node.id));
-        finishedCount += 1;
+        void testNodeLatency(node.id).then((result) => {
+          setTestingNodeIds((ids) => ids.filter((id) => id !== node.id));
+          finishedCount += 1;
 
-        if (finishedCount === candidates.length) {
-          message.success(candidates.length === 1 ? `${node.name} 测速完成` : `已完成 ${candidates.length} 个节点测速`);
-        }
-      }, 420 + index * 90 + Math.random() * 850);
+          if (!result.available && result.message) {
+            message.warning(`${node.name} 测速失败`);
+          }
+
+          if (finishedCount === candidates.length) {
+            message.success(candidates.length === 1 ? `${node.name} 测速完成` : `已完成 ${candidates.length} 个节点测速`);
+          }
+        });
+      }, 320 + index * 120);
       testTimerRefs.current.push(timer);
     });
   };
@@ -480,7 +482,7 @@ export function NodesPage() {
             <div className="form-grid four-columns">
               <Form.Item label="类型" name="protocol" rules={[{ required: true, message: "请选择节点类型" }]}><Select options={protocolOptions} disabled={isEditingManagedNode} /></Form.Item>
               <Form.Item label="名称" name="name" rules={[{ required: true, message: "请输入节点名称" }]}><Input placeholder="请输入节点名称" disabled={isEditingManagedNode} /></Form.Item>
-              <Form.Item label="地址" name="address" rules={[{ required: true, message: "请输入节点地址" }]} className="span-two"><Input placeholder="例如：103.162.245.76" disabled={isEditingManagedNode} /></Form.Item>
+              <Form.Item label="地址" name="address" rules={[{ required: true, message: "请输入节点地址" }]} className="span-two"><Input placeholder="节点服务器域名或 IP" disabled={isEditingManagedNode} /></Form.Item>
               <Form.Item label="端口" name="port" rules={[{ required: true, message: "请输入端口" }]}><InputNumber min={1} max={65535} style={{ width: "100%" }} disabled={isEditingManagedNode} /></Form.Item>
               <Form.Item label="初始可用" name="available" valuePropName="checked"><Switch checkedChildren={<CheckCircleOutlined />} disabled={isEditingManagedNode} /></Form.Item>
               <Form.Item label="前置代理（dialer-proxy）" name="dialerProxy" className="span-two">

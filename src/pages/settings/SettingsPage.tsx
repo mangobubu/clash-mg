@@ -100,7 +100,7 @@ export function SettingsPage() {
   };
 
   const reset = () => Modal.confirm({
-    title: "重置全部设置？", content: "将恢复原型默认配置，页面中的修改会被覆盖。", okText: "重置", cancelText: "取消",
+    title: "重置全部设置？", content: "将恢复应用默认配置，页面中的修改会被覆盖。", okText: "重置", cancelText: "取消",
     onOk: () => { resetSettings(); message.success("已恢复默认设置"); },
   });
 
@@ -159,12 +159,13 @@ function SettingFieldControl({ field, value, onChange, themeMode, setThemeMode }
 }
 
 function SettingsFooter({ section, lastSaved }: { section: string; lastSaved: string }) {
+  const { runtime, settings } = useAppStore();
   const items = useMemo(() => {
-    if (section === "dns") return [{ icon: <SafetyCertificateOutlined />, label: "当前模式", value: "Fake-IP" }, { icon: <GlobalOutlined />, label: "当前监听地址", value: "0.0.0.0:1053" }, { icon: <FolderOpenOutlined />, label: "默认 DNS 数量", value: "4" }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-    if (section === "interface") return [{ icon: <DesktopOutlined />, label: "当前主题", value: "浅色 · 青绿色" }, { icon: <GlobalOutlined />, label: "当前语言", value: "简体中文" }, { icon: <SettingOutlined />, label: "布局密度", value: "舒适" }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-    if (section === "log") return [{ icon: <FileTextOutlined />, label: "当前级别", value: "Info" }, { icon: <CheckCircleOutlined />, label: "文件写入", value: "已启用" }, { icon: <FolderOpenOutlined />, label: "日志路径", value: "~/logs/clash-mg" }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-    return [{ icon: <CheckCircleOutlined />, label: "状态", value: <SaveSuccess /> }, { icon: <SafetyCertificateOutlined />, label: "当前核心", value: "Clash Meta" }, { icon: <FolderOpenOutlined />, label: "配置文件", value: "default.yaml" }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-  }, [lastSaved, section]);
+    if (section === "dns") return [{ icon: <SafetyCertificateOutlined />, label: "当前模式", value: String(settings.enhancedMode ?? "Fake-IP") }, { icon: <GlobalOutlined />, label: "当前监听地址", value: String(settings.dnsListen ?? "0.0.0.0:1053") }, { icon: <FolderOpenOutlined />, label: "默认 DNS 数量", value: String(Array.isArray(settings.defaultDns) ? settings.defaultDns.length : 0) }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+    if (section === "interface") return [{ icon: <DesktopOutlined />, label: "当前主题", value: String(settings.uiTheme ?? "浅色") }, { icon: <GlobalOutlined />, label: "当前语言", value: String(settings.uiLanguage ?? "简体中文") }, { icon: <SettingOutlined />, label: "布局密度", value: String(settings.listDensity ?? "舒适") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+    if (section === "log") return [{ icon: <FileTextOutlined />, label: "当前级别", value: String(settings.logLevel ?? "Info") }, { icon: <CheckCircleOutlined />, label: "文件写入", value: settings.logToFile ? "已启用" : "未启用" }, { icon: <FolderOpenOutlined />, label: "日志路径", value: String(settings.logPath ?? "~/logs/clash-mg") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+    return [{ icon: <CheckCircleOutlined />, label: "状态", value: <SaveSuccess /> }, { icon: <SafetyCertificateOutlined />, label: "当前核心", value: runtime.coreVersion }, { icon: <FolderOpenOutlined />, label: "控制器", value: runtime.controllerUrl }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+  }, [lastSaved, runtime.controllerUrl, runtime.coreVersion, section, settings]);
   return <SummaryFooter items={items} />;
 }
 

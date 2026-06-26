@@ -36,18 +36,12 @@ const navigation = [
   { key: "/settings/general", icon: <SettingOutlined />, label: "设置" },
 ];
 
-const notifications: Array<{ title: string; content: string; time: string; tone: "success" | "processing" | "default" }> = [
-  { title: "订阅更新成功", content: "机场主订阅已导入 128 个节点", time: "5 分钟前", tone: "success" },
-  { title: "节点延迟变化", content: "香港 IEPL 01 当前延迟 38 ms", time: "12 分钟前", tone: "processing" },
-  { title: "新版本可用", content: "Clash Meta v1.18.5 已是最新版本", time: "今天", tone: "default" },
-];
-
 export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [unreadNotificationCount, setUnreadNotificationCount] = useState(notifications.length);
+  const [notificationsRead, setNotificationsRead] = useState(false);
   const {
     themeMode,
     setThemeMode,
@@ -56,6 +50,8 @@ export function AppShell() {
     nodes,
     rules,
     logs,
+    activities,
+    runtime,
   } = useAppStore();
 
   useEffect(() => {
@@ -88,6 +84,27 @@ export function AppShell() {
     return [...nodeResults, ...ruleResults, ...logResults].slice(0, 12);
   }, [logs, nodes, query, rules]);
 
+  const notifications = useMemo(
+    () => [
+      ...activities.slice(0, 4).map((activity) => ({
+        id: `activity-${activity.id}`,
+        title: "活动事件",
+        content: activity.content,
+        time: activity.time,
+        tone: activity.kind === "success" ? "success" as const : "processing" as const,
+      })),
+      ...logs.slice(0, 4).map((log) => ({
+        id: `log-${log.id}`,
+        title: `${log.source} · ${log.level}`,
+        content: log.content,
+        time: log.time,
+        tone: log.level === "SUCCESS" ? "success" as const : log.level === "ERROR" || log.level === "WARNING" ? "processing" as const : "default" as const,
+      })),
+    ].slice(0, 6),
+    [activities, logs],
+  );
+  const unreadNotificationCount = notificationsRead ? 0 : notifications.length;
+
   const openConnectionsWindow = async () => {
     try {
       await invoke("open_connections_window");
@@ -114,7 +131,7 @@ export function AppShell() {
       message.info("暂无未读通知");
       return;
     }
-    setUnreadNotificationCount(0);
+    setNotificationsRead(true);
     message.success("通知已全部标记为已读");
   };
 
@@ -130,7 +147,7 @@ export function AppShell() {
       <List
         dataSource={notifications}
         renderItem={(item) => (
-          <List.Item>
+          <List.Item key={item.id}>
             <List.Item.Meta
               avatar={<StatusDot status={unreadNotificationCount > 0 ? item.tone : "default"}><span /></StatusDot>}
               title={item.title}
@@ -167,15 +184,15 @@ export function AppShell() {
         <div className="sidebar-spacer" />
         <div className="core-status">
           {sidebarCollapsed ? (
-            <Tooltip title="Clash Meta · 运行正常"><span className="core-dot" /></Tooltip>
+            <Tooltip title={`${runtime.coreVersion} · ${runtime.controllerConnected ? "已连接" : "未连接"}`}><span className="core-dot" /></Tooltip>
           ) : (
             <>
-              <dl><dt>核心</dt><dd><StatusDot>Clash Meta</StatusDot></dd></dl>
-              <dl><dt>版本</dt><dd>v1.18.5</dd></dl>
-              <dl><dt>本地端口</dt><dd>7890</dd></dl>
-              <dl><dt>Uptime</dt><dd>2h 35m 18s</dd></dl>
+              <dl><dt>核心</dt><dd><StatusDot status={runtime.controllerConnected ? "success" : "default"}>{runtime.coreVersion}</StatusDot></dd></dl>
+              <dl><dt>控制器</dt><dd>{runtime.controllerUrl}</dd></dl>
+              <dl><dt>下载</dt><dd>{runtime.downloadTotal}</dd></dl>
+              <dl><dt>上传</dt><dd>{runtime.uploadTotal}</dd></dl>
               <Divider />
-              <div className="latest-version"><StatusDot>已是最新版本</StatusDot></div>
+              <div className="latest-version"><StatusDot status={runtime.controllerConnected ? "success" : "default"}>{runtime.controllerConnected ? `同步于 ${runtime.lastSync}` : "等待连接"}</StatusDot></div>
             </>
           )}
         </div>

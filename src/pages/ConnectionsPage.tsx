@@ -23,7 +23,7 @@ export function ConnectionsPage() {
   const [processFilter, setProcessFilter] = useState("all");
   const [onlyActive, setOnlyActive] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const { connections, closeConnections, clearClosedConnections } = useAppStore();
+  const { connections, closeConnections, clearClosedConnections, refreshRuntimeData } = useAppStore();
 
   const processOptions = useMemo(() => [
     { label: "所有进程", value: "all" },
@@ -72,7 +72,7 @@ export function ConnectionsPage() {
 
   return (
     <div className="page-stack connections-page">
-      <PageHeader title="连接" description="查看与管理当前网络连接，分析流量去向与命中规则。" actions={<><Button icon={<ReloadOutlined />} onClick={() => message.success("连接列表已刷新")}>刷新</Button><Button type="primary" icon={<DeleteOutlined />} onClick={() => { clearClosedConnections(); message.success("已清理关闭的连接"); }}>清理关闭连接</Button></>} />
+      <PageHeader title="连接" description="查看与管理当前网络连接，分析流量去向与命中规则。" actions={<><Button icon={<ReloadOutlined />} onClick={() => { void refreshRuntimeData(); message.success("已请求刷新连接列表"); }}>刷新</Button><Button type="primary" icon={<DeleteOutlined />} onClick={() => { clearClosedConnections(); message.success("已清理关闭的连接"); }}>清理关闭连接</Button></>} />
       <Panel className="connections-panel">
         <div className="filter-bar connection-filter-bar">
           <Input prefix={<SearchOutlined />} placeholder="搜索目标域名 / IP / 进程" value={search} onChange={(event) => setSearch(event.target.value)} allowClear />

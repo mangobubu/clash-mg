@@ -1,19 +1,22 @@
 export type ThemeMode = "light" | "dark" | "system";
 
 export type NodeProtocol = "Shadowsocks" | "VMess" | "Trojan" | "Hysteria2";
+export type NodeOrigin = "managed" | "local";
 
 export interface ProxyNode {
   id: string;
   name: string;
-  country: string;
-  flag: string;
+  country?: string;
+  flag?: string;
   protocol: NodeProtocol;
   address: string;
   port: number;
   latency: number;
   password?: string;
   cipher?: string;
-  group: string;
+  dialerProxy?: string;
+  group?: string;
+  origin?: NodeOrigin;
   available: boolean;
 }
 
@@ -55,13 +58,14 @@ export interface Subscription {
 }
 
 export type RuleType = "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN" | "IP-CIDR" | "RULE-SET" | "GEOIP" | "MATCH";
+export type RuleOrigin = "managed" | "local";
 
 export interface RoutingRule {
   id: string;
   type: RuleType;
   content: string;
   policy: string;
-  source: "本地规则" | "内置规则集" | "内置规则" | "默认规则";
+  source: RuleOrigin;
   enabled: boolean;
   noResolve: boolean;
   wildcard: boolean;
@@ -140,6 +144,8 @@ export interface AppState {
   selectNode: (nodeId: string, groupId?: string) => void;
   selectGroup: (groupId: string) => void;
   addNode: (node: ProxyNode) => void;
+  updateNode: (node: ProxyNode) => void;
+  updateNodeLatency: (nodeId: string, latency: number, available?: boolean) => void;
   addGroup: (group: ProxyGroup) => void;
   updateGroup: (group: ProxyGroup) => void;
   refreshLatencies: () => void;

@@ -6,7 +6,8 @@ import {
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Button, Descriptions, Flex, Input, Modal, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
+import { invoke } from "@tauri-apps/api/core";
+import { Button, Flex, Input, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
 import type { TableColumnsType } from "antd";
 import { PageHeader, Panel, StatusDot } from "../components/Common";
 import { useAppStore } from "../store/useAppStore";
@@ -19,22 +20,42 @@ export function ConnectionsPage() {
   const [protocol, setProtocol] = useState("all");
   const [status, setStatus] = useState("all");
   const [policy, setPolicy] = useState("all");
+  const [processFilter, setProcessFilter] = useState("all");
   const [onlyActive, setOnlyActive] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [detail, setDetail] = useState<Connection | null>(null);
   const { connections, closeConnections, clearClosedConnections } = useAppStore();
+
+  const processOptions = useMemo(() => [
+    { label: "所有进程", value: "all" },
+    ...Array.from(new Set(connections.map((connection) => connection.process)))
+      .sort((current, next) => current.localeCompare(next))
+      .map((value) => ({ label: value, value })),
+  ], [connections]);
 
   const filtered = useMemo(() => connections.filter((connection) =>
     `${connection.app}${connection.process}${connection.target}${connection.ip}`.toLowerCase().includes(search.toLowerCase())
     && (protocol === "all" || connection.protocol === protocol)
     && (status === "all" || connection.status === status)
     && (policy === "all" || connection.policy === policy)
-    && (!onlyActive || connection.status === "活跃")), [connections, onlyActive, policy, protocol, search, status]);
+    && (processFilter === "all" || connection.process === processFilter)
+    && (!onlyActive || connection.status === "活跃")), [connections, onlyActive, policy, processFilter, protocol, search, status]);
 
   const closeItems = (ids: string[]) => {
     closeConnections(ids);
     setSelectedIds([]);
     message.success(`已关闭 ${ids.length} 个连接`);
+  };
+
+  const openConnectionDetail = async (connection: Connection) => {
+    try {
+      await invoke("open_connection_detail_window", {
+        id: connection.id,
+        title: `连接详情 - ${connection.app}`,
+      });
+    } catch (error) {
+      console.error(error);
+      message.error("连接详情窗口打开失败，请确认已在 Tauri 桌面环境中运行并重启应用");
+    }
   };
 
   const columns: TableColumnsType<Connection> = [
@@ -46,7 +67,7 @@ export function ConnectionsPage() {
     { title: "规则", dataIndex: "rule", width: 120, render: (value: string) => <Tag color={value === "广告拦截" ? "red" : value === "媒体分流" ? "green" : value === "ChatGPT" ? "purple" : "blue"}>{value}</Tag> },
     { title: "策略组", dataIndex: "policy", width: 140 },
     { title: "状态", dataIndex: "status", width: 90, render: (value: Connection["status"]) => <StatusDot status={value === "活跃" ? "success" : "default"}>{value}</StatusDot> },
-    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, record) => <Space><Button icon={<EyeOutlined />} onClick={() => setDetail(record)} aria-label="查看详情" /><Button icon={<CloseCircleOutlined />} disabled={record.status === "已关闭"} onClick={() => closeItems([record.id])} aria-label="关闭连接" /></Space> },
+    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, record) => <Space><Button icon={<EyeOutlined />} onClick={() => void openConnectionDetail(record)} aria-label="查看详情" /><Button icon={<CloseCircleOutlined />} disabled={record.status === "已关闭"} onClick={() => closeItems([record.id])} aria-label="关闭连接" /></Space> },
   ];
 
   return (
@@ -58,8 +79,9 @@ export function ConnectionsPage() {
           <Select value={protocol} onChange={setProtocol} options={[{ label: "所有协议", value: "all" }, { label: "TCP", value: "TCP" }, { label: "UDP", value: "UDP" }]} />
           <Select value={status} onChange={setStatus} options={[{ label: "所有状态", value: "all" }, { label: "活跃", value: "活跃" }, { label: "已关闭", value: "已关闭" }]} />
           <Select value={policy} onChange={setPolicy} options={[{ label: "所有策略组", value: "all" }, ...Array.from(new Set(connections.map((connection) => connection.policy))).map((value) => ({ label: value, value }))]} />
+          <Select value={processFilter} onChange={setProcessFilter} options={processOptions} />
           <Flex gap={8} align="center" className="filter-switch"><Text>仅显示活跃</Text><Switch checked={onlyActive} onChange={setOnlyActive} /></Flex>
-          <Button icon={<ReloadOutlined />} onClick={() => { setSearch(""); setProtocol("all"); setStatus("all"); setPolicy("all"); }} aria-label="重置筛选" />
+          <Button icon={<ReloadOutlined />} onClick={() => { setSearch(""); setProtocol("all"); setStatus("all"); setPolicy("all"); setProcessFilter("all"); }} aria-label="重置筛选" />
         </div>
         {selectedIds.length > 0 && <div className="selection-action-bar"><span>已选择 {selectedIds.length} 个连接</span><Button danger size="small" icon={<CloseCircleOutlined />} onClick={() => closeItems(selectedIds)}>关闭所选连接</Button></div>}
         <Table<Connection>
@@ -72,9 +94,6 @@ export function ConnectionsPage() {
         />
       </Panel>
 
-      <Modal open={Boolean(detail)} onCancel={() => setDetail(null)} footer={<><Button onClick={() => setDetail(null)}>关闭</Button>{detail?.status === "活跃" && <Button danger onClick={() => { if (detail) closeItems([detail.id]); setDetail(null); }}>终止连接</Button>}</>} title="连接详情" width={620}>
-        {detail && <Descriptions bordered column={1} items={[{ key: "app", label: "应用 / 进程", children: `${detail.app}（${detail.process}）` }, { key: "target", label: "目标地址", children: detail.target }, { key: "ip", label: "目标 IP", children: detail.ip }, { key: "protocol", label: "协议", children: detail.protocol }, { key: "traffic", label: "流量", children: `上传 ${detail.upload} / 下载 ${detail.download}` }, { key: "duration", label: "持续时间", children: detail.duration }, { key: "rule", label: "命中规则", children: detail.rule }, { key: "policy", label: "代理策略", children: detail.policy }, { key: "status", label: "状态", children: <StatusDot status={detail.status === "活跃" ? "success" : "default"}>{detail.status}</StatusDot> }]} />}
-      </Modal>
     </div>
   );
 }

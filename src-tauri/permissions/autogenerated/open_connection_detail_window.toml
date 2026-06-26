@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-connection-detail-window"
+description = "Enables the open_connection_detail_window command without any pre-configured scope."
+commands.allow = ["open_connection_detail_window"]
+
+[[permission]]
+identifier = "deny-open-connection-detail-window"
+description = "Denies the open_connection_detail_window command without any pre-configured scope."
+commands.deny = ["open_connection_detail_window"]

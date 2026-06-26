@@ -39,12 +39,12 @@ export const mockSubscriptions: Subscription[] = [
 ];
 
 export const mockRules: RoutingRule[] = [
-  { id: "rule-1", type: "DOMAIN-SUFFIX", content: "openai.com", policy: "ChatGPT", source: "本地规则", enabled: true, noResolve: false, wildcard: false },
-  { id: "rule-2", type: "DOMAIN-SUFFIX", content: "youtube.com", policy: "全球直连", source: "本地规则", enabled: true, noResolve: false, wildcard: false },
-  { id: "rule-3", type: "RULE-SET", content: "Apple", policy: "全球直连", source: "内置规则集", enabled: true, noResolve: false, wildcard: false },
-  { id: "rule-4", type: "DOMAIN-KEYWORD", content: "google", policy: "搜索服务", source: "本地规则", enabled: true, noResolve: false, wildcard: false },
-  { id: "rule-5", type: "GEOIP", content: "CN", policy: "直连", source: "内置规则", enabled: true, noResolve: true, wildcard: false },
-  { id: "rule-6", type: "MATCH", content: "漏网之鱼", policy: "代理", source: "默认规则", enabled: true, noResolve: false, wildcard: false },
+  { id: "rule-1", type: "DOMAIN-SUFFIX", content: "openai.com", policy: "ChatGPT", source: "local", enabled: true, noResolve: false, wildcard: false },
+  { id: "rule-2", type: "DOMAIN-SUFFIX", content: "youtube.com", policy: "全球直连", source: "local", enabled: true, noResolve: false, wildcard: false },
+  { id: "rule-3", type: "RULE-SET", content: "Apple", policy: "全球直连", source: "managed", enabled: true, noResolve: false, wildcard: false },
+  { id: "rule-4", type: "DOMAIN-KEYWORD", content: "google", policy: "搜索服务", source: "local", enabled: true, noResolve: false, wildcard: false },
+  { id: "rule-5", type: "GEOIP", content: "CN", policy: "直连", source: "managed", enabled: true, noResolve: true, wildcard: false },
+  { id: "rule-6", type: "MATCH", content: "漏网之鱼", policy: "代理", source: "managed", enabled: true, noResolve: false, wildcard: false },
 ];
 
 export const mockConnections: Connection[] = [

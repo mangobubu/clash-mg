@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ApartmentOutlined,
   AppstoreOutlined,
   BellOutlined,
-  CloseOutlined,
   CloudDownloadOutlined,
   DashboardOutlined,
   FileTextOutlined,
@@ -13,13 +13,14 @@ import {
   RightOutlined,
   SearchOutlined,
   SettingOutlined,
-  ShrinkOutlined,
   SunOutlined,
 } from "@ant-design/icons";
+import { invoke } from "@tauri-apps/api/core";
 import { Button, Divider, Flex, Input, List, Menu, Modal, Popover, Segmented, Tag, Tooltip, Typography, message } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../store/useAppStore";
 import type { ThemeMode } from "../types";
+import { isTauriRuntime } from "../utils/tauri";
 import { AppLogo, StatusDot } from "./Common";
 
 const { Text } = Typography;
@@ -27,6 +28,7 @@ const { Text } = Typography;
 const navigation = [
   { key: "/", icon: <HomeOutlined />, label: "总览" },
   { key: "/proxies", icon: <LineChartOutlined />, label: "代理" },
+  { key: "/nodes", icon: <ApartmentOutlined />, label: "节点" },
   { key: "/subscriptions", icon: <CloudDownloadOutlined />, label: "订阅" },
   { key: "/rules", icon: <FileTextOutlined />, label: "规则" },
   { key: "/connections", icon: <DashboardOutlined />, label: "连接" },
@@ -76,7 +78,7 @@ export function AppShell() {
     if (!keyword) return [];
     const nodeResults = nodes
       .filter((node) => `${node.name}${node.address}${node.protocol}`.toLowerCase().includes(keyword))
-      .map((node) => ({ id: `node-${node.id}`, title: node.name, subtitle: `${node.protocol} · ${node.address}`, type: "节点", path: "/proxies" }));
+      .map((node) => ({ id: `node-${node.id}`, title: node.name, subtitle: `${node.protocol} · ${node.address}`, type: "节点", path: "/nodes" }));
     const ruleResults = rules
       .filter((rule) => `${rule.type}${rule.content}${rule.policy}`.toLowerCase().includes(keyword))
       .map((rule) => ({ id: `rule-${rule.id}`, title: rule.content, subtitle: `${rule.type} · ${rule.policy}`, type: "规则", path: "/rules" }));
@@ -86,16 +88,25 @@ export function AppShell() {
     return [...nodeResults, ...ruleResults, ...logResults].slice(0, 12);
   }, [logs, nodes, query, rules]);
 
-  const runWindowAction = async (action: "minimize" | "toggleMaximize" | "close") => {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      message.info("窗口控制将在 Tauri 桌面环境中生效");
-      return;
+  const openConnectionsWindow = async () => {
+    try {
+      await invoke("open_connections_window");
+    } catch (error) {
+      console.error(error);
+      message.error("连接窗口打开失败，请确认已重启 Tauri 桌面应用");
     }
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const appWindow = getCurrentWindow();
-    if (action === "minimize") await appWindow.minimize();
-    if (action === "toggleMaximize") await appWindow.toggleMaximize();
-    if (action === "close") await appWindow.close();
+  };
+
+  const handleNavigation = async (key: string) => {
+    if (key === "/connections") {
+      const isDesktopRuntime = await isTauriRuntime();
+      if (isDesktopRuntime) {
+        await openConnectionsWindow();
+        return;
+      }
+    }
+
+    navigate(key);
   };
 
   const markNotificationsRead = () => {
@@ -134,7 +145,7 @@ export function AppShell() {
   return (
     <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
-        <div className="sidebar-brand" data-tauri-drag-region>
+        <div className="sidebar-brand">
           <AppLogo compact={sidebarCollapsed} />
           <Tooltip title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}>
             <Button
@@ -143,7 +154,6 @@ export function AppShell() {
               icon={sidebarCollapsed ? <RightOutlined /> : <LeftOutlined />}
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-              data-tauri-drag-region="false"
             />
           </Tooltip>
         </div>
@@ -152,7 +162,7 @@ export function AppShell() {
           inlineCollapsed={sidebarCollapsed}
           selectedKeys={[selectedKey]}
           items={navigation}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => void handleNavigation(String(key))}
         />
         <div className="sidebar-spacer" />
         <div className="core-status">
@@ -171,8 +181,8 @@ export function AppShell() {
         </div>
       </aside>
 
-      <header className="topbar" data-tauri-drag-region>
-        <button className="global-search-trigger" onClick={() => setSearchOpen(true)} data-tauri-drag-region="false">
+      <header className="topbar">
+        <button className="global-search-trigger" onClick={() => setSearchOpen(true)}>
           <SearchOutlined />
           <span>搜索节点 / 规则 / 日志</span>
           <kbd>⌘K</kbd>
@@ -190,11 +200,6 @@ export function AppShell() {
         <Popover content={notificationContent} trigger="click" placement="bottomRight">
           <Button size="large" icon={<BellOutlined />} className="notification-button">{unreadNotificationCount > 0 && <i />}</Button>
         </Popover>
-        <Flex className="window-controls" gap={2} data-tauri-drag-region="false">
-          <Button type="text" icon={<ShrinkOutlined />} onClick={() => void runWindowAction("minimize")} aria-label="最小化" />
-          <Button type="text" icon={<span className="maximize-icon" />} onClick={() => void runWindowAction("toggleMaximize")} aria-label="最大化" />
-          <Button type="text" danger icon={<CloseOutlined />} onClick={() => void runWindowAction("close")} aria-label="关闭" />
-        </Flex>
       </header>
 
       <main className="app-main"><Outlet /></main>

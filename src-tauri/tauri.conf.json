@@ -13,13 +13,13 @@
     "windows": [
       {
         "label": "main",
-        "title": "clash-mg",
+        "title": "",
         "width": 1440,
         "height": 900,
         "minWidth": 1120,
         "minHeight": 720,
         "center": true,
-        "decorations": false,
+        "decorations": true,
         "resizable": true
       }
     ],
@@ -32,4 +32,3 @@
     "targets": "all"
   }
 }
-

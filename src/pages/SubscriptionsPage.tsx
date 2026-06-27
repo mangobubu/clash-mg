@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   CopyOutlined,
   DeleteOutlined,
@@ -56,6 +56,13 @@ interface SubscriptionFormValues {
   preview: boolean;
 }
 
+type RefreshOrigin = "single" | "batch";
+
+interface SubscriptionRefreshState {
+  origin: RefreshOrigin;
+  ids: string[];
+}
+
 export function SubscriptionsPage() {
   const [quickUrl, setQuickUrl] = useState("");
   const [search, setSearch] = useState("");
@@ -65,6 +72,8 @@ export function SubscriptionsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [detail, setDetail] = useState<Subscription | null>(null);
+  const [refreshState, setRefreshState] = useState<SubscriptionRefreshState | null>(null);
+  const refreshLockRef = useRef(false);
   const [form] = Form.useForm<SubscriptionFormValues>();
   const { subscriptions, addSubscription, updateSubscription, deleteSubscription, refreshSubscriptions } = useAppStore();
 
@@ -123,7 +132,7 @@ export function SubscriptionsPage() {
     }
     addSubscription({ id: crypto.randomUUID(), name: `快速订阅 ${subscriptions.length + 1}`, type: "HTTP", url: quickUrl.trim(), nodeCount: 0, lastUpdated: "尚未更新", updateInterval: 12, status: "正常", enabled: true, autoUpdate: true, proxyUpdate: true, allowOverride: false, usedTraffic: "0 B", expiresAt: "未知", tags: ["快速导入"] });
     setQuickUrl("");
-    message.success("订阅链接已保存，请将其写入 Mihomo 配置或作为 Provider 刷新");
+    message.success("订阅链接已保存，点击“立即更新”后将校验并应用到 Mihomo");
   };
 
   const confirmDelete = (subscription: Subscription) => Modal.confirm({
@@ -132,6 +141,43 @@ export function SubscriptionsPage() {
     okText: "删除", cancelText: "取消", okButtonProps: { danger: true },
     onOk: () => { deleteSubscription(subscription.id); if (detail?.id === subscription.id) setDetail(null); },
   });
+
+  const handleRefreshSubscriptions = async (ids: string[] | undefined, origin: RefreshOrigin) => {
+    if (refreshLockRef.current) return;
+    refreshLockRef.current = true;
+    setRefreshState({ origin, ids: ids ?? subscriptions.map((subscription) => subscription.id) });
+
+    try {
+      const result = await refreshSubscriptions(ids);
+      if (detail) {
+        const latest = useAppStore.getState().subscriptions.find((subscription) => subscription.id === detail.id);
+        if (latest) setDetail(latest);
+      }
+
+      if (result.failed && result.updated) {
+        message.warning(`已更新并应用 ${result.updated} 项订阅，${result.failed} 项失败`);
+        return;
+      }
+      if (result.failed) {
+        message.error(result.messages.join("；") || "订阅更新失败");
+        return;
+      }
+      if (result.updated) {
+        message.success(`已更新并应用 ${result.updated} 项订阅`);
+        return;
+      }
+
+      message.info(result.messages[0] ?? "没有需要更新的订阅");
+    } catch (error) {
+      message.error(`订阅更新失败：${String(error)}`);
+    } finally {
+      refreshLockRef.current = false;
+      setRefreshState(null);
+    }
+  };
+
+  const isSingleRefreshing = (id: string) =>
+    refreshState?.origin === "single" && refreshState.ids.includes(id);
 
   const columns: TableColumnsType<Subscription> = [
     { title: "订阅名称", dataIndex: "name", width: 190, render: (value: string, record) => <button className="table-primary-button" onClick={() => setDetail(record)}>{value}</button> },
@@ -144,7 +190,7 @@ export function SubscriptionsPage() {
     {
       title: "操作", key: "actions", width: 150, fixed: "right",
       render: (_, record) => <Space onClick={(event) => event.stopPropagation()}>
-        <Button type="text" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([record.id]); message.success("已请求刷新订阅"); }} aria-label="立即更新" />
+        <Button type="text" icon={<ReloadOutlined />} loading={isSingleRefreshing(record.id)} disabled={Boolean(refreshState) && !isSingleRefreshing(record.id)} onClick={() => void handleRefreshSubscriptions([record.id], "single")} aria-label="立即更新" />
         <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)} aria-label="编辑订阅" />
         <Dropdown menu={{ items: [{ key: "copy", icon: <CopyOutlined />, label: "复制订阅" }, { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true }], onClick: ({ key }) => key === "delete" ? confirmDelete(record) : navigator.clipboard.writeText(record.url).then(() => message.success("订阅链接已复制")) }}>
           <Button type="text" icon={<MoreOutlined />} aria-label="更多操作" />
@@ -155,14 +201,14 @@ export function SubscriptionsPage() {
 
   return (
     <div className="page-stack subscriptions-page">
-      <PageHeader title="订阅" description="管理订阅源、更新配置并同步节点。" actions={<><Button icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions(selectedIds.length ? selectedIds : undefined); message.success(selectedIds.length ? `已请求刷新 ${selectedIds.length} 项订阅` : "已请求批量刷新"); }}>批量更新</Button><Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增订阅</Button></>} />
+      <PageHeader title="订阅" description="管理订阅源、更新配置并同步节点。" actions={<><Button icon={<ReloadOutlined />} loading={refreshState?.origin === "batch"} disabled={Boolean(refreshState) && refreshState?.origin !== "batch"} onClick={() => void handleRefreshSubscriptions(selectedIds.length ? selectedIds : undefined, "batch")}>批量更新</Button><Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增订阅</Button></>} />
 
       <Panel className="quick-import-panel">
         <div className="quick-import-icon"><LinkOutlined /></div>
         <div className="quick-import-content">
           <Flex align="center" gap={10}><Title level={3}>快速导入订阅链接</Title><Tag color="green">推荐</Tag></Flex>
           <Flex gap={12}><Input size="large" placeholder="粘贴订阅链接，例如：https://sub.example.com/xxxx" value={quickUrl} onChange={(event) => setQuickUrl(event.target.value)} onPressEnter={importQuickLink} /><Button type="primary" size="large" onClick={importQuickLink}>导入链接</Button></Flex>
-          <Text type="secondary">粘贴订阅链接后会保存为本地订阅记录；已配置到 Mihomo 的 Provider 会在刷新时同步真实节点。</Text>
+          <Text type="secondary">粘贴订阅链接后会保存为本地记录；点击更新将依次下载、校验并热重载 Mihomo 配置。</Text>
         </div>
       </Panel>
 
@@ -219,7 +265,7 @@ export function SubscriptionsPage() {
           <Flex justify="space-between" align="center"><Title level={3}>{detail.name}</Title><StatusDot status={detail.status === "正常" ? "success" : "error"}>{detail.status}</StatusDot></Flex>
           <Descriptions column={1} labelStyle={{ width: 100 }} items={[{ key: "url", label: "订阅地址", children: detail.url }, { key: "nodes", label: "节点数量", children: `${detail.nodeCount} 个` }, { key: "updated", label: "最后更新", children: detail.lastUpdated }, { key: "interval", label: "更新时间", children: detail.updateInterval ? `${detail.updateInterval} 小时` : "手动" }, { key: "traffic", label: "使用流量", children: detail.usedTraffic }, { key: "expires", label: "到期时间", children: detail.expiresAt }, { key: "format", label: "配置格式", children: "Clash Meta (YAML)" }]} />
           <Panel title="使用状态" className="detail-switches"><Flex vertical gap={16}><Flex justify="space-between">启用订阅<Switch checked={detail.enabled} onChange={(enabled) => { const next = { ...detail, enabled, status: enabled ? "正常" as const : "已禁用" as const }; updateSubscription(next); setDetail(next); }} /></Flex><Flex justify="space-between">自动更新<Switch checked={detail.autoUpdate} onChange={(autoUpdate) => { const next = { ...detail, autoUpdate }; updateSubscription(next); setDetail(next); }} /></Flex><Flex justify="space-between">代理更新<Switch checked={detail.proxyUpdate} onChange={(proxyUpdate) => { const next = { ...detail, proxyUpdate }; updateSubscription(next); setDetail(next); }} /></Flex></Flex></Panel>
-          <Flex gap={12}><Button block icon={<EditOutlined />} onClick={() => { openEdit(detail); setDetail(null); }}>编辑订阅</Button><Button block type="primary" icon={<ReloadOutlined />} onClick={() => { refreshSubscriptions([detail.id]); message.success("已请求刷新订阅"); }}>立即更新</Button></Flex>
+          <Flex gap={12}><Button block icon={<EditOutlined />} onClick={() => { openEdit(detail); setDetail(null); }}>编辑订阅</Button><Button block type="primary" icon={<ReloadOutlined />} loading={isSingleRefreshing(detail.id)} disabled={Boolean(refreshState) && !isSingleRefreshing(detail.id)} onClick={() => void handleRefreshSubscriptions([detail.id], "single")}>立即更新</Button></Flex>
         </div>}
       </Drawer>
     </div>

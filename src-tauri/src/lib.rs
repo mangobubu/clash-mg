@@ -2,12 +2,14 @@ use std::fmt::Write;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod core;
 mod defaults;
 mod mihomo;
 mod models;
 mod storage;
+mod subscription;
 
-use models::{AppSnapshot, DelayResult, SettingsMap};
+use models::{AppSnapshot, DelayResult, LocalSubscriptionRefreshResult, SettingsMap};
 
 const CONNECTIONS_WINDOW_LABEL: &str = "connections-window";
 
@@ -152,8 +154,40 @@ async fn refresh_proxy_providers(
 }
 
 #[tauri::command]
+async fn refresh_local_subscriptions(
+    app: tauri::AppHandle,
+    snapshot: AppSnapshot,
+    subscription_ids: Vec<String>,
+) -> Result<LocalSubscriptionRefreshResult, String> {
+    let refreshed =
+        subscription::refresh_local_subscriptions(&app, snapshot, subscription_ids).await;
+    storage::save_snapshot(&app, &refreshed.snapshot)?;
+    Ok(refreshed)
+}
+
+#[tauri::command]
 async fn test_proxy_delay(settings: SettingsMap, node_name: String) -> Result<DelayResult, String> {
     Ok(mihomo::test_proxy_delay(settings, node_name).await)
+}
+
+#[tauri::command]
+fn get_mihomo_core_status(app: tauri::AppHandle) -> Result<core::MihomoCoreStatus, String> {
+    core::core_status(&app)
+}
+
+#[tauri::command]
+async fn download_mihomo_core(app: tauri::AppHandle) -> Result<core::MihomoCoreStatus, String> {
+    core::download_core(app).await
+}
+
+#[tauri::command]
+async fn start_mihomo_core(
+    app: tauri::AppHandle,
+    settings: SettingsMap,
+) -> Result<core::MihomoCoreLaunchResult, String> {
+    let mut snapshot = storage::load_snapshot(&app)?;
+    snapshot.settings = settings;
+    core::start_core(app, snapshot).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -168,7 +202,11 @@ pub fn run() {
             select_proxy_node,
             close_runtime_connections,
             refresh_proxy_providers,
-            test_proxy_delay
+            refresh_local_subscriptions,
+            test_proxy_delay,
+            get_mihomo_core_status,
+            download_mihomo_core,
+            start_mihomo_core
         ])
         .run(tauri::generate_context!())
         .expect("运行 clash-mg 时发生错误");

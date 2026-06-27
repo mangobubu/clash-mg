@@ -78,7 +78,7 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "logLevel", label: "日志级别", control: "select", options: ["调试 (Debug)", "信息 (Info)", "警告 (Warning)", "错误 (Error)"] },
         { key: "tcpKeepAlive", label: "TCP 保持活动", description: "保持 TCP 连接活动以提高稳定性", control: "switch" },
         { key: "udpForward", label: "UDP 转发", description: "允许内核转发 UDP 流量", control: "switch" },
-        { key: "externalController", label: "外部控制端口", description: "用于外部程序控制 Clash 内核", control: "number", min: 1, max: 65535 },
+        { key: "externalController", label: "外部控制地址", description: "用于外部程序控制 Clash 内核", control: "input", placeholder: "127.0.0.1:9090" },
         { key: "debugPort", label: "内核调试端口", description: "用于内核调试与性能分析", control: "number", min: 1, max: 65535 },
         { key: "configOverride", label: "配置文件覆盖", description: "使用自定义配置路径覆盖当前配置文件", control: "input", placeholder: "选择配置文件" },
       ] },

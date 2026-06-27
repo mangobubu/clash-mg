@@ -2,14 +2,14 @@ import { create } from "zustand";
 import {
   closeRuntimeConnections,
   loadAppSnapshot,
-  refreshRuntimeProviders,
+  refreshLocalSubscriptions,
   refreshRuntimeSnapshot,
   saveAppSnapshot,
   selectRuntimeProxy,
   testRuntimeProxyDelay,
 } from "../backend/api";
 import { createEmptyAppData, defaultSettings } from "../defaults/appDefaults";
-import type { AppData, AppState, DelayResult, OverrideItem } from "../types";
+import type { AppData, AppState, DelayResult, OverrideItem, Subscription, SubscriptionRefreshResult } from "../types";
 
 const currentTime = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 
@@ -24,6 +24,18 @@ const overrideKeyByScope: Record<OverrideScope, OverrideKey> = {
 
 const emptyAppData = createEmptyAppData();
 let persistTimer: number | undefined;
+
+const isRuntimeProviderRecord = (subscription: Subscription) =>
+  subscription.description === "来自 Mihomo Proxy Provider" && subscription.tags.includes("Provider");
+
+const createSubscriptionRefreshResult = (): SubscriptionRefreshResult => ({
+  updated: 0,
+  failed: 0,
+  skipped: 0,
+  localUpdated: 0,
+  providerUpdated: 0,
+  messages: [],
+});
 
 const toAppData = (state: AppState): AppData => ({
   themeMode: state.themeMode,
@@ -59,6 +71,7 @@ const queuePersist = () => {
 const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
   useAppStore.setState({
     ...snapshot,
+    subscriptions: snapshot.subscriptions.filter((subscription) => !isRuntimeProviderRecord(subscription)),
     hydrated: true,
     backendAvailable,
   });
@@ -98,7 +111,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const { data, backendAvailable } = await loadAppSnapshot();
       applySnapshot(data, backendAvailable);
-      if (backendAvailable) void get().refreshRuntimeData();
     } catch (error) {
       console.error(error);
       set({ ...createEmptyAppData(), hydrated: true, backendAvailable: false });
@@ -243,20 +255,34 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({ subscriptions: state.subscriptions.filter((item) => item.id !== id) }));
     queuePersist();
   },
-  refreshSubscriptions: (ids) => {
+  refreshSubscriptions: async (ids) => {
     const current = get();
     const targets = current.subscriptions.filter((subscription) => !ids || ids.includes(subscription.id));
-    const providerNames = targets.filter((subscription) => subscription.tags.includes("Provider")).map((subscription) => subscription.name);
+    const result = createSubscriptionRefreshResult();
 
-    if (!providerNames.length) {
-      void current.refreshRuntimeData();
-      appendLog("INFO", "订阅", "已刷新 Mihomo 运行数据；本地订阅需要先写入 Core 配置后才能由 Provider 更新");
-      return;
+    if (!targets.length) {
+      appendLog("WARNING", "订阅", "没有找到可刷新的订阅");
+      result.skipped = ids?.length ?? 0;
+      result.messages.push("没有找到可刷新的订阅");
+      return result;
     }
 
-    void refreshRuntimeProviders(toAppData(current), providerNames)
-      .then((snapshot) => applySnapshot(snapshot, true))
-      .catch((error) => appendLog("ERROR", "订阅", `订阅 Provider 刷新失败：${String(error)}`));
+    try {
+      const refreshed = await refreshLocalSubscriptions(toAppData(current), targets.map((subscription) => subscription.id));
+      applySnapshot(refreshed.snapshot, get().backendAvailable);
+      result.localUpdated = refreshed.updated;
+      result.updated = refreshed.updated;
+      result.failed = refreshed.failed;
+      result.skipped = refreshed.skipped;
+      result.messages.push(...refreshed.messages);
+    } catch (error) {
+      const message = `订阅更新失败：${String(error)}`;
+      appendLog("ERROR", "订阅", message);
+      result.failed = targets.length;
+      result.messages.push(message);
+    }
+
+    return result;
   },
 
   addRule: (rule) => {

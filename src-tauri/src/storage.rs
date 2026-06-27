@@ -28,6 +28,9 @@ pub fn load_snapshot(app: &AppHandle) -> Result<AppSnapshot, String> {
     let mut snapshot: AppSnapshot =
         serde_json::from_str(&content).map_err(|error| error.to_string())?;
     merge_default_settings(&mut snapshot.settings);
+    snapshot
+        .subscriptions
+        .retain(|subscription| !subscription.is_runtime_provider_record());
     Ok(snapshot)
 }
 

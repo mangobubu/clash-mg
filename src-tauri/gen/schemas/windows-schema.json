@@ -177,6 +177,36 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "允许前端读写本地应用数据，并通过 Rust 后端访问 Mihomo 外部控制器。",
+          "type": "string",
+          "const": "allow-app-backend",
+          "markdownDescription": "允许前端读写本地应用数据，并通过 Rust 后端访问 Mihomo 外部控制器。"
+        },
+        {
+          "description": "Enables the open_connection_detail_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-connection-detail-window",
+          "markdownDescription": "Enables the open_connection_detail_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_connections_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-connections-window",
+          "markdownDescription": "Enables the open_connections_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_connection_detail_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-connection-detail-window",
+          "markdownDescription": "Denies the open_connection_detail_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_connections_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-connections-window",
+          "markdownDescription": "Denies the open_connections_window command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

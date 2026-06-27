@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createEmptyAppData } from "../defaults/appDefaults";
-import type { AppData, AppSettings, DelayResult } from "../types";
+import type {
+  AppData,
+  AppSettings,
+  DelayResult,
+  LocalSubscriptionRefreshResult,
+  MihomoCoreLaunchResult,
+  MihomoCoreStatus,
+} from "../types";
 import { isTauriRuntime } from "../utils/tauri";
 
 const browserStorageKey = "clash-mg-app-state";
@@ -43,9 +50,38 @@ export async function refreshRuntimeProviders(snapshot: AppData, providerNames: 
   return invoke<AppData>("refresh_proxy_providers", { snapshot, providerNames });
 }
 
+export async function refreshLocalSubscriptions(snapshot: AppData, subscriptionIds: string[]): Promise<LocalSubscriptionRefreshResult> {
+  if (!(await isTauriRuntime())) {
+    return {
+      snapshot,
+      updated: 0,
+      failed: 0,
+      skipped: subscriptionIds.length,
+      messages: ["浏览器预览环境无法下载订阅"],
+    };
+  }
+
+  return invoke<LocalSubscriptionRefreshResult>("refresh_local_subscriptions", { snapshot, subscriptionIds });
+}
+
 export async function testRuntimeProxyDelay(settings: AppSettings, nodeName: string): Promise<DelayResult> {
   if (!(await isTauriRuntime())) return { latency: 0, available: false, message: "浏览器预览环境无法访问 Mihomo 控制器" };
   return invoke<DelayResult>("test_proxy_delay", { settings, nodeName });
+}
+
+export async function getMihomoCoreStatus(): Promise<MihomoCoreStatus> {
+  if (!(await isTauriRuntime())) return { exists: true, path: "" };
+  return invoke<MihomoCoreStatus>("get_mihomo_core_status");
+}
+
+export async function downloadMihomoCore(): Promise<MihomoCoreStatus> {
+  if (!(await isTauriRuntime())) return { exists: true, path: "" };
+  return invoke<MihomoCoreStatus>("download_mihomo_core");
+}
+
+export async function startMihomoCore(settings: AppSettings): Promise<MihomoCoreLaunchResult> {
+  if (!(await isTauriRuntime())) return { started: false, controllerReady: false, message: "浏览器预览环境无法启动 Mihomo 内核" };
+  return invoke<MihomoCoreLaunchResult>("start_mihomo_core", { settings });
 }
 
 function loadBrowserSnapshot() {

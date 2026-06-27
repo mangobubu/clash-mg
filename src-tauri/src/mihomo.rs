@@ -9,7 +9,7 @@ use crate::{
     defaults::{current_time, value_to_string},
     models::{
         AppSnapshot, Connection, DelayResult, LogEntry, ProxyGroup, ProxyNode, RoutingRule,
-        RuntimeInfo, SettingsMap, Subscription, TrafficPoint,
+        RuntimeInfo, SettingsMap, TrafficPoint,
     },
 };
 
@@ -79,6 +79,19 @@ impl MihomoClient {
         response.json::<Value>().await.or_else(|_| Ok(json!({})))
     }
 
+    pub async fn reload_config(&self, payload: &str) -> Result<(), String> {
+        self.put_json(
+            "/configs?force=true",
+            json!({ "path": "", "payload": payload }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn verify_runtime_proxies(&self) -> Result<(), String> {
+        self.get_json("/proxies").await.map(|_| ())
+    }
+
     async fn delete(&self, path: &str) -> Result<(), String> {
         let response = self
             .with_auth(self.client.delete(self.url(path)))
@@ -106,7 +119,19 @@ impl MihomoClient {
     }
 }
 
+pub async fn controller_is_ready(settings: &SettingsMap) -> bool {
+    let Some(client) = MihomoClient::from_settings(settings) else {
+        return false;
+    };
+
+    client.get_json("/version").await.is_ok()
+}
+
 pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
+    snapshot
+        .subscriptions
+        .retain(|subscription| !subscription.is_runtime_provider_record());
+
     let Some(client) = MihomoClient::from_settings(&snapshot.settings) else {
         snapshot.runtime = disconnected_runtime("未配置 Mihomo 外部控制器地址", "");
         snapshot.connected = false;
@@ -150,11 +175,6 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
     match client.get_json("/connections").await {
         Ok(connections) => apply_connections(&mut snapshot, &mut runtime, &connections),
         Err(error) => errors.push(format!("连接读取失败：{error}")),
-    }
-
-    match client.get_json("/providers/proxies").await {
-        Ok(providers) => apply_proxy_providers(&mut snapshot, &providers),
-        Err(error) => errors.push(format!("订阅 Provider 读取失败：{error}")),
     }
 
     match client.get_json("/rules").await {
@@ -333,7 +353,7 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) {
     let mut managed_nodes = Vec::new();
 
     for (name, proxy) in proxies {
-        if is_group_proxy(name, proxy) {
+        if is_group_proxy(name, proxy) || is_builtin_special_proxy(proxy) {
             continue;
         }
 
@@ -453,57 +473,6 @@ fn apply_connections(snapshot: &mut AppSnapshot, runtime: &mut RuntimeInfo, valu
         let overflow = snapshot.traffic_history.len() - 60;
         snapshot.traffic_history.drain(0..overflow);
     }
-}
-
-fn apply_proxy_providers(snapshot: &mut AppSnapshot, value: &Value) {
-    let Some(providers) = value.get("providers").and_then(Value::as_object) else {
-        return;
-    };
-
-    let mut managed_subscriptions = Vec::new();
-    for (name, provider) in providers {
-        let provider_type = proxy_string(provider, "vehicleType")
-            .or_else(|| proxy_string(provider, "type"))
-            .unwrap_or_else(|| "HTTP".into());
-        let node_count = provider
-            .get("proxies")
-            .and_then(Value::as_array)
-            .map(|items| items.len())
-            .unwrap_or(0);
-        let updated_at = proxy_string(provider, "updatedAt")
-            .or_else(|| proxy_string(provider, "updated"))
-            .unwrap_or_else(|| "未知".into());
-        let url = proxy_string(provider, "url").unwrap_or_default();
-
-        managed_subscriptions.push(Subscription {
-            id: stable_id("provider", name),
-            name: name.clone(),
-            subscription_type: map_subscription_type(&provider_type),
-            url,
-            node_count,
-            last_updated: updated_at,
-            update_interval: 0,
-            status: if node_count > 0 {
-                "正常"
-            } else {
-                "更新失败"
-            }
-            .into(),
-            enabled: true,
-            auto_update: true,
-            proxy_update: true,
-            allow_override: false,
-            description: Some("来自 Mihomo Proxy Provider".into()),
-            used_traffic: "由服务商统计".into(),
-            expires_at: "由服务商统计".into(),
-            tags: vec!["Provider".into()],
-        });
-    }
-
-    snapshot
-        .subscriptions
-        .retain(|subscription| !subscription.tags.iter().any(|tag| tag == "Provider"));
-    snapshot.subscriptions.extend(managed_subscriptions);
 }
 
 fn apply_rules(snapshot: &mut AppSnapshot, value: &Value) {
@@ -626,7 +595,12 @@ fn map_connection(value: &Value) -> Connection {
     }
 }
 
-fn push_runtime_log(snapshot: &mut AppSnapshot, level: &str, source: &str, content: &str) {
+pub(crate) fn push_runtime_log(
+    snapshot: &mut AppSnapshot,
+    level: &str,
+    source: &str,
+    content: &str,
+) {
     snapshot.logs.insert(
         0,
         LogEntry {
@@ -661,6 +635,16 @@ fn is_group_proxy(name: &str, proxy: &Value) -> bool {
         proxy_type.as_str(),
         "selector" | "urltest" | "url-test" | "fallback" | "loadbalance" | "load-balance" | "relay"
     ) || matches!(name, "DIRECT" | "REJECT" | "GLOBAL")
+}
+
+fn is_builtin_special_proxy(proxy: &Value) -> bool {
+    let proxy_type = proxy_string(proxy, "type")
+        .unwrap_or_default()
+        .to_lowercase();
+    matches!(
+        proxy_type.as_str(),
+        "compatible" | "pass" | "passrule" | "rejectdrop"
+    )
 }
 
 fn proxy_string(value: &Value, key: &str) -> Option<String> {
@@ -732,15 +716,6 @@ fn group_icon(group_type: &str) -> &'static str {
     }
 }
 
-fn map_subscription_type(provider_type: &str) -> String {
-    match provider_type.to_lowercase().as_str() {
-        "file" => "文件导入",
-        "inline" | "local" => "本地链接",
-        _ => "HTTP",
-    }
-    .into()
-}
-
 fn map_rule_type(rule_type: &str) -> String {
     match rule_type.to_lowercase().replace('_', "-").as_str() {
         "domainsuffix" | "domain-suffix" => "DOMAIN-SUFFIX",
@@ -805,4 +780,33 @@ fn format_duration(start: Option<&str>) -> String {
     let minutes = (seconds % 3600) / 60;
     let seconds = seconds % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::defaults::default_snapshot;
+
+    #[test]
+    fn excludes_builtin_special_proxies_from_nodes() {
+        let mut snapshot = default_snapshot();
+        let proxies = json!({
+            "proxies": {
+                "COMPATIBLE": { "type": "Compatible" },
+                "PASS": { "type": "Pass" },
+                "PASS-RULE": { "type": "PassRule" },
+                "REJECT-DROP": { "type": "RejectDrop" },
+                "正常节点": {
+                    "type": "ss",
+                    "server": "example.com",
+                    "port": 443
+                }
+            }
+        });
+
+        apply_proxies(&mut snapshot, &proxies);
+
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].name, "正常节点");
+    }
 }

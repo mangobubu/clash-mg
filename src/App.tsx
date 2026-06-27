@@ -4,6 +4,7 @@ import { App as AntApp, ConfigProvider, Spin, theme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { MihomoCoreBootstrap } from "./components/MihomoCoreBootstrap";
 import { useAppStore } from "./store/useAppStore";
 import { isTauriRuntime } from "./utils/tauri";
 
@@ -130,6 +131,7 @@ export default function App() {
       }}
     >
       <AntApp>
+        <MihomoCoreBootstrap />
         <HashRouter>
           <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>
             {!hydrated ? <div className="route-loading"><Spin size="large" /></div> : <Routes>

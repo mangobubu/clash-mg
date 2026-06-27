@@ -139,6 +139,26 @@ export interface DelayResult {
   message?: string;
 }
 
+export interface MihomoCoreStatus {
+  exists: boolean;
+  path: string;
+}
+
+export interface MihomoCoreLaunchResult {
+  started: boolean;
+  controllerReady: boolean;
+  message: string;
+}
+
+export interface MihomoCoreDownloadProgress {
+  status: "resolving" | "downloading" | "extracting" | "completed" | "failed";
+  downloadedBytes: number;
+  totalBytes?: number;
+  speedBytesPerSecond: number;
+  percent: number;
+  message?: string;
+}
+
 export type SettingValue = string | number | boolean | string[];
 export type AppSettings = Record<string, SettingValue>;
 
@@ -164,6 +184,23 @@ export interface AppData {
   runtime: RuntimeInfo;
 }
 
+export interface LocalSubscriptionRefreshResult {
+  snapshot: AppData;
+  updated: number;
+  failed: number;
+  skipped: number;
+  messages: string[];
+}
+
+export interface SubscriptionRefreshResult {
+  updated: number;
+  failed: number;
+  skipped: number;
+  localUpdated: number;
+  providerUpdated: number;
+  messages: string[];
+}
+
 export interface AppState extends AppData {
   hydrated: boolean;
   backendAvailable: boolean;
@@ -185,7 +222,7 @@ export interface AppState extends AppData {
   addSubscription: (subscription: Subscription) => void;
   updateSubscription: (subscription: Subscription) => void;
   deleteSubscription: (id: string) => void;
-  refreshSubscriptions: (ids?: string[]) => void;
+  refreshSubscriptions: (ids?: string[]) => Promise<SubscriptionRefreshResult>;
   addRule: (rule: RoutingRule) => void;
   updateRule: (rule: RoutingRule) => void;
   deleteRule: (id: string) => void;

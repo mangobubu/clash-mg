@@ -78,6 +78,52 @@ pub struct Subscription {
     pub tags: Vec<String>,
 }
 
+impl Subscription {
+    pub fn is_runtime_provider_record(&self) -> bool {
+        self.description.as_deref() == Some("来自 Mihomo Proxy Provider")
+            && self.tags.iter().any(|tag| tag == "Provider")
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::Subscription;
+
+    fn subscription(description: Option<&str>, tags: &[&str]) -> Subscription {
+        Subscription {
+            id: "subscription".into(),
+            name: "测试订阅".into(),
+            subscription_type: "HTTP".into(),
+            url: "https://example.com/subscription".into(),
+            node_count: 0,
+            last_updated: "尚未更新".into(),
+            update_interval: 12,
+            status: "正常".into(),
+            enabled: true,
+            auto_update: true,
+            proxy_update: true,
+            allow_override: false,
+            description: description.map(ToString::to_string),
+            used_traffic: "0 B".into(),
+            expires_at: "未知".into(),
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn identifies_legacy_runtime_provider_record() {
+        assert!(
+            subscription(Some("来自 Mihomo Proxy Provider"), &["Provider"])
+                .is_runtime_provider_record()
+        );
+    }
+
+    #[test]
+    fn keeps_user_subscription_with_provider_tag() {
+        assert!(!subscription(Some("用户备注"), &["Provider"]).is_runtime_provider_record());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingRule {
@@ -175,6 +221,16 @@ pub struct DelayResult {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSubscriptionRefreshResult {
+    pub snapshot: AppSnapshot,
+    pub updated: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

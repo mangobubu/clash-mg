@@ -330,13 +330,9 @@ export function NodesPage() {
 
     candidates.forEach((node, index) => {
       const timer = window.setTimeout(() => {
-        void testNodeLatency(node.id).then((result) => {
+        void testNodeLatency(node.id).then(() => {
           setTestingNodeIds((ids) => ids.filter((id) => id !== node.id));
           finishedCount += 1;
-
-          if (!result.available && result.message) {
-            message.warning(`${node.name} 测速失败`);
-          }
 
           if (finishedCount === candidates.length) {
             message.success(candidates.length === 1 ? `${node.name} 测速完成` : `已完成 ${candidates.length} 个节点测速`);

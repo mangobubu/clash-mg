@@ -17,7 +17,7 @@ npm.cmd install
 npm.cmd run dev
 ```
 
-浏览器调试地址为 `http://localhost:1420`。
+浏览器调试地址为 `http://localhost:8220`。
 
 桌面端开发模式：
 

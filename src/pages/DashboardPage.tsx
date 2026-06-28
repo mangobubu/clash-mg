@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
@@ -9,6 +9,7 @@ import {
 import { Flex, Radio, Switch, Typography } from "antd";
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useAppStore } from "../store/useAppStore";
+import { getLanIp } from "../backend/api";
 import { CompactCopy, Panel, StatusDot } from "../components/Common";
 
 const { Text, Title } = Typography;
@@ -38,6 +39,10 @@ function formatTrafficValue(valueInMegabytes: number) {
 
 export function DashboardPage() {
   const [range, setRange] = useState("24h");
+  const [lanIp, setLanIp] = useState("...");
+  useEffect(() => {
+    getLanIp().then(setLanIp).catch(console.error);
+  }, []);
   const [hiddenTrafficSeries, setHiddenTrafficSeries] = useState<Record<string, boolean>>({});
   const {
     connected,
@@ -88,7 +93,7 @@ export function DashboardPage() {
               <div className="connection-main">
                   <div className="connection-details">
                     <div className="ip-details">
-                    <dl><dt>控制器</dt><dd>{runtime.controllerUrl} <CompactCopy text={runtime.controllerUrl} /></dd></dl>
+                    <dl><dt>局域网 IP</dt><dd>{lanIp} <CompactCopy text={lanIp} /></dd></dl>
                     <dl><dt>核心版本</dt><dd>{runtime.coreVersion}</dd></dl>
                   </div>
                 </div>
@@ -106,7 +111,7 @@ export function DashboardPage() {
                 <div className="traffic-metrics">
                   <TrafficMetric icon={<ArrowDownOutlined />} label="下载总量" value={realtimeTraffic.download.total} unit="" tone="green" />
                   <TrafficMetric icon={<ArrowUpOutlined />} label="上传总量" value={realtimeTraffic.upload.total} unit="" tone="blue" />
-                  <TrafficMetric icon={<GlobalOutlined />} label="控制器" value={runtime.controllerConnected ? "已连接" : "未连接"} unit="" tone="slate" />
+                  <TrafficMetric icon={<GlobalOutlined />} label="局域网 IP" value={lanIp} unit="" tone="slate" />
                 </div>
                 <div className="traffic-distribution">
                   <div className="traffic-share">
@@ -122,7 +127,7 @@ export function DashboardPage() {
                   <div className="distribution-list">
                     <dl><dt><i className="green-dot" /> 下载流量</dt><dd>{realtimeTraffic.download.total} <span>{runtime.lastSync}</span></dd></dl>
                     <dl><dt><i className="blue-dot" /> 上传流量</dt><dd>{realtimeTraffic.upload.total} <span>{runtime.lastSync}</span></dd></dl>
-                    <dl><dt>控制器</dt><dd>{runtime.controllerUrl}</dd></dl>
+                    <dl><dt>局域网 IP</dt><dd>{lanIp}</dd></dl>
                   </div>
                 </div>
               </div>

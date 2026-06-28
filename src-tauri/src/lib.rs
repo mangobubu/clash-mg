@@ -283,6 +283,19 @@ fn setting_u16(settings: &SettingsMap, key: &str, fallback: u16) -> u16 {
         .unwrap_or(fallback)
 }
 
+#[tauri::command]
+fn get_lan_ip() -> String {
+    use std::net::UdpSocket;
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                return addr.ip().to_string();
+            }
+        }
+    }
+    "127.0.0.1".into()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -300,7 +313,8 @@ pub fn run() {
             test_proxy_delay,
             get_mihomo_core_status,
             download_mihomo_core,
-            start_mihomo_core
+            start_mihomo_core,
+            get_lan_ip
         ])
         .run(tauri::generate_context!())
         .expect("运行 clash-mg 时发生错误");

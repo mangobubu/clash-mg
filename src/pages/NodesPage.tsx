@@ -26,6 +26,8 @@ import {
 import { HintBar, Latency, PageHeader, Panel } from "../components/Common";
 import { useAppStore } from "../store/useAppStore";
 import type { NodeProtocol, ProxyGroup, ProxyNode } from "../types";
+import { compareProxyNodesByLatency } from "../utils/nodeLatency";
+import { continentOptions, getNodeContinent, type ContinentFilter } from "../utils/nodeLocation";
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -44,8 +46,6 @@ interface NodeFormValues {
   link?: string;
 }
 
-type ContinentFilter = "all" | "亚洲" | "欧洲" | "美洲" | "大洋洲" | "非洲" | "未定位";
-
 const protocolOptions: Array<{ label: string; value: NodeProtocol }> = [
   { label: "Shadowsocks", value: "Shadowsocks" },
   { label: "VMess", value: "VMess" },
@@ -60,35 +60,10 @@ const cipherOptions = [
   { label: "auto", value: "auto" },
 ];
 
-const continentOptions: Array<{ label: string; value: ContinentFilter }> = [
-  { label: "所有洲", value: "all" },
-  { label: "亚洲", value: "亚洲" },
-  { label: "欧洲", value: "欧洲" },
-  { label: "美洲", value: "美洲" },
-  { label: "大洋洲", value: "大洋洲" },
-  { label: "非洲", value: "非洲" },
-  { label: "未定位", value: "未定位" },
-];
-
-const continentKeywords: Record<Exclude<ContinentFilter, "all" | "未定位">, string[]> = {
-  亚洲: ["亚洲", "香港", "日本", "新加坡", "台湾", "韩国", "中国", "泰国", "印度", "越南", "马来西亚", "菲律宾", "印尼"],
-  欧洲: ["欧洲", "德国", "英国", "法国", "荷兰", "瑞士", "意大利", "西班牙", "瑞典", "芬兰", "波兰", "俄罗斯"],
-  美洲: ["美洲", "美国", "加拿大", "巴西", "墨西哥", "洛杉矶", "纽约", "圣何塞", "西雅图"],
-  大洋洲: ["大洋洲", "澳大利亚", "新西兰", "悉尼", "墨尔本"],
-  非洲: ["非洲", "南非", "埃及", "尼日利亚", "肯尼亚"],
-};
-
 const getNodeAddress = (node: ProxyNode) => `${node.address}:${node.port}`;
 const nodeLinkPattern = /^(ss|vmess|trojan|hysteria2):\/\//i;
 const canProxyGroupContainNodes = (group: ProxyGroup) => group.type !== "Direct" && group.type !== "Block";
 const getNodeOrigin = (node: ProxyNode) => node.origin ?? "managed";
-const getNodeContinent = (node: ProxyNode): Exclude<ContinentFilter, "all"> => {
-  const locationText = `${node.group ?? ""}${node.country ?? ""}`;
-  if (!locationText) return "未定位";
-  const matched = Object.entries(continentKeywords).find(([, keywords]) => keywords.some((keyword) => locationText.includes(keyword)));
-  return matched ? matched[0] as Exclude<ContinentFilter, "all" | "未定位"> : "未定位";
-};
-
 export function NodesPage() {
   const { nodes, groups, addNode, updateNode, updateGroup, testNodeLatency } = useAppStore();
   const [search, setSearch] = useState("");
@@ -143,7 +118,7 @@ export function NodesPage() {
         || (availabilityFilter === "available" && node.available)
         || (availabilityFilter === "unavailable" && !node.available);
       return matchesKeyword && matchesProtocol && matchesContinent && matchesAvailability;
-    });
+    }).sort(compareProxyNodesByLatency);
   }, [availabilityFilter, continentFilter, nodes, protocolFilter, search]);
 
   const availableCount = nodes.filter((node) => node.available).length;

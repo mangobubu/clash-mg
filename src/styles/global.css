@@ -312,7 +312,11 @@ img, svg {
 .proxy-group-card-actions { display: flex; justify-content: flex-end; margin-top: auto; }
 .proxy-group-empty { grid-column: 1 / -1; padding: 48px 0; }
 .proxy-node-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border-color); }
+.proxy-node-picker-filters { flex: 1; min-width: 280px; display: grid; grid-template-columns: minmax(220px, 1fr) 130px; gap: 10px; }
+.proxy-picker-section { padding-top: 14px; }
+.proxy-picker-section + .proxy-picker-section { margin-top: 4px; border-top: 1px solid var(--border-color); }
 .proxy-node-picker-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 12px; padding-top: 14px; }
+.proxy-group-picker-list button { min-height: 96px; }
 .proxy-node-picker-list button { width: 100%; min-height: 126px; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; background: color-mix(in srgb, var(--panel-solid) 75%, transparent); text-align: left; cursor: pointer; }
 .proxy-node-picker-list button:hover { border-color: color-mix(in srgb, var(--blue) 50%, var(--border-color)); }
 .proxy-node-picker-list button.selected { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 5%, transparent); }
@@ -488,6 +492,8 @@ img, svg {
   .traffic-metric strong { font-size: 24px; }
   .traffic-share-labels { justify-content: flex-start; flex-wrap: wrap; }
   .node-picker-grid { grid-template-columns: 1fr; }
+  .proxy-node-picker-toolbar { align-items: stretch; flex-direction: column; }
+  .proxy-node-picker-filters { min-width: 0; }
   .settings-layout { grid-template-columns: 1fr; }.settings-sidebar { display: none; }
   .form-grid.four-columns { grid-template-columns: 1fr 1fr; }
   .nodes-overview, .nodes-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -498,4 +504,5 @@ img, svg {
 @media (max-width: 620px) {
   .nodes-overview, .nodes-grid, .nodes-filter-bar { grid-template-columns: 1fr; }
   .nodes-filter-bar > :first-child { grid-column: auto; }
+  .proxy-node-picker-filters { grid-template-columns: 1fr; }
 }

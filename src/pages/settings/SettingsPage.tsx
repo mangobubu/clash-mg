@@ -162,10 +162,11 @@ function SettingsFooter({ section, lastSaved }: { section: string; lastSaved: st
   const { runtime, settings } = useAppStore();
   const items = useMemo(() => {
     if (section === "dns") return [{ icon: <SafetyCertificateOutlined />, label: "当前模式", value: String(settings.enhancedMode ?? "Fake-IP") }, { icon: <GlobalOutlined />, label: "当前监听地址", value: String(settings.dnsListen ?? "0.0.0.0:1053") }, { icon: <FolderOpenOutlined />, label: "默认 DNS 数量", value: String(Array.isArray(settings.defaultDns) ? settings.defaultDns.length : 0) }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+    if (section === "network" || section === "core") return [{ icon: <SafetyCertificateOutlined />, label: "内核 TUN", value: runtime.tunEnabled ? "运行中" : "未运行" }, { icon: <SettingOutlined />, label: "实际进程识别", value: runtime.processMode || "未知" }, { icon: <FolderOpenOutlined />, label: "控制器", value: runtime.controllerUrl }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     if (section === "interface") return [{ icon: <DesktopOutlined />, label: "当前主题", value: String(settings.uiTheme ?? "浅色") }, { icon: <GlobalOutlined />, label: "当前语言", value: String(settings.uiLanguage ?? "简体中文") }, { icon: <SettingOutlined />, label: "布局密度", value: String(settings.listDensity ?? "舒适") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     if (section === "log") return [{ icon: <FileTextOutlined />, label: "当前级别", value: String(settings.logLevel ?? "Info") }, { icon: <CheckCircleOutlined />, label: "文件写入", value: settings.logToFile ? "已启用" : "未启用" }, { icon: <FolderOpenOutlined />, label: "日志路径", value: String(settings.logPath ?? "~/logs/clash-mg") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     return [{ icon: <CheckCircleOutlined />, label: "状态", value: <SaveSuccess /> }, { icon: <SafetyCertificateOutlined />, label: "当前核心", value: runtime.coreVersion }, { icon: <FolderOpenOutlined />, label: "控制器", value: runtime.controllerUrl }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-  }, [lastSaved, runtime.controllerUrl, runtime.coreVersion, section, settings]);
+  }, [lastSaved, runtime.controllerUrl, runtime.coreVersion, runtime.processMode, runtime.tunEnabled, section, settings]);
   return <SummaryFooter items={items} />;
 }
 

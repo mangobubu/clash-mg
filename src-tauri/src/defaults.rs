@@ -50,7 +50,8 @@ pub fn default_settings() -> SettingsMap {
         ("strictRoute".into(), json!(false)),
         ("networkInterface".into(), json!("系统默认")),
         ("bindAddress".into(), json!("0.0.0.0")),
-        ("processMode".into(), json!("Strict")),
+        ("processMode".into(), json!("Always")),
+        ("processModeDefaultV2".into(), json!(true)),
         ("bypassMainland".into(), json!(true)),
         ("dnsEnabled".into(), json!(true)),
         ("dnsIpv6".into(), json!(false)),
@@ -130,6 +131,16 @@ pub fn default_settings() -> SettingsMap {
 }
 
 pub fn merge_default_settings(settings: &mut SettingsMap) {
+    if !settings.contains_key("processModeDefaultV2") {
+        if settings
+            .get("processMode")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("strict"))
+        {
+            settings.insert("processMode".into(), json!("Always"));
+        }
+        settings.insert("processModeDefaultV2".into(), json!(true));
+    }
     for (key, value) in default_settings() {
         settings.entry(key).or_insert(value);
     }
@@ -145,8 +156,10 @@ pub fn default_snapshot() -> AppSnapshot {
         selected_group_id: String::new(),
         nodes: Vec::new(),
         groups: Vec::new(),
+        proxy_group_overrides: Vec::new(),
         subscriptions: Vec::new(),
         rules: Vec::new(),
+        rule_overrides: Vec::new(),
         connections: Vec::new(),
         logs: Vec::new(),
         activities: Vec::new(),
@@ -162,6 +175,8 @@ pub fn default_snapshot() -> AppSnapshot {
             upload_total: "0 B".into(),
             download_total: "0 B".into(),
             last_sync: current_time(),
+            tun_enabled: false,
+            process_mode: "未连接".into(),
             error: None,
         },
     }

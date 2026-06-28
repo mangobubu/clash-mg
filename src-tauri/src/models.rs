@@ -38,7 +38,7 @@ pub struct ProxyNode {
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyGroup {
     pub id: String,
@@ -49,10 +49,20 @@ pub struct ProxyGroup {
     pub icon: String,
     pub description: String,
     pub node_ids: Vec<String>,
+    #[serde(default)]
+    pub group_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_node_id: Option<String>,
     pub auto_test: bool,
     pub allow_manual: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyGroupMemberOverride {
+    pub target_group_id: String,
+    pub target_group_name: String,
+    pub added_group_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,7 +134,7 @@ mod subscription_tests {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingRule {
     pub id: String,
@@ -136,6 +146,19 @@ pub struct RoutingRule {
     pub enabled: bool,
     pub no_resolve: bool,
     pub wildcard: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingRuleOverride {
+    #[serde(rename = "targetType")]
+    pub target_rule_type: String,
+    pub target_content: String,
+    pub policy: String,
+    pub enabled: bool,
+    pub no_resolve: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -155,6 +178,10 @@ pub struct Connection {
     pub duration: String,
     pub rule: String,
     pub policy: String,
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub chain: Vec<String>,
     pub status: String,
 }
 
@@ -210,6 +237,10 @@ pub struct RuntimeInfo {
     pub upload_total: String,
     pub download_total: String,
     pub last_sync: String,
+    #[serde(default)]
+    pub tun_enabled: bool,
+    #[serde(default)]
+    pub process_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -244,8 +275,12 @@ pub struct AppSnapshot {
     pub selected_group_id: String,
     pub nodes: Vec<ProxyNode>,
     pub groups: Vec<ProxyGroup>,
+    #[serde(default)]
+    pub proxy_group_overrides: Vec<ProxyGroupMemberOverride>,
     pub subscriptions: Vec<Subscription>,
     pub rules: Vec<RoutingRule>,
+    #[serde(default)]
+    pub rule_overrides: Vec<RoutingRuleOverride>,
     pub connections: Vec<Connection>,
     pub logs: Vec<LogEntry>,
     pub activities: Vec<Activity>,

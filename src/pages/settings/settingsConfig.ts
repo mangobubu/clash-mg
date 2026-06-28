@@ -122,7 +122,7 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "bypassMainland", label: "绕过大陆地址", control: "switch" },
         { key: "udpForward", label: "UDP 转发", control: "switch" },
         { key: "bypassLan", label: "绕过局域网地址", control: "switch" },
-        { key: "processMode", label: "进程发现模式", control: "select", options: ["Strict", "Always", "Off"] },
+        { key: "processMode", label: "进程发现模式", description: "Always 强制识别进程；Strict 由内核按需识别；Off 关闭识别", control: "select", options: ["Always", "Strict", "Off"] },
       ] },
     ],
   },

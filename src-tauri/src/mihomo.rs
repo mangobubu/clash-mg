@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use chrono::{DateTime, Local, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -15,6 +18,8 @@ use crate::{
 
 const MANAGED_ORIGIN: &str = "managed";
 const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+const DELAY_TEST_TIMEOUT_MS: u64 = 10_000;
+const DELAY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct MihomoClient {
     base_url: String,
@@ -47,11 +52,16 @@ impl MihomoClient {
     }
 
     async fn get_json(&self, path: &str) -> Result<Value, String> {
+        self.get_json_with_timeout(path, Duration::from_secs(3))
+            .await
+    }
+
+    async fn get_json_with_timeout(&self, path: &str, timeout: Duration) -> Result<Value, String> {
         let response = self
-            .with_auth(self.client.get(self.url(path)))
+            .with_auth(self.client.get(self.url(path)).timeout(timeout))
             .send()
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(format_request_error)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -79,6 +89,21 @@ impl MihomoClient {
         response.json::<Value>().await.or_else(|_| Ok(json!({})))
     }
 
+    async fn post_json(&self, path: &str, body: Value) -> Result<Value, String> {
+        let response = self
+            .with_auth(self.client.post(self.url(path)).json(&body))
+            .send()
+            .await
+            .map_err(format_request_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("控制器返回 HTTP {status}"));
+        }
+
+        response.json::<Value>().await.or_else(|_| Ok(json!({})))
+    }
+
     pub async fn reload_config(&self, payload: &str) -> Result<(), String> {
         self.put_json(
             "/configs?force=true",
@@ -88,8 +113,24 @@ impl MihomoClient {
         .map(|_| ())
     }
 
+    pub async fn restart_config(&self, payload: &str) -> Result<(), String> {
+        self.post_json("/restart", json!({ "path": "", "payload": payload }))
+            .await
+            .map(|_| ())
+    }
+
     pub async fn verify_runtime_proxies(&self) -> Result<(), String> {
         self.get_json("/proxies").await.map(|_| ())
+    }
+
+    pub async fn runtime_tun_enabled(&self) -> Result<bool, String> {
+        self.get_json("/configs").await.and_then(|config| {
+            config
+                .get("tun")
+                .and_then(|tun| tun.get("enable"))
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "Mihomo 控制器未返回 TUN 运行状态".to_string())
+        })
     }
 
     async fn delete(&self, path: &str) -> Result<(), String> {
@@ -151,6 +192,8 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
         upload_total: snapshot.runtime.upload_total.clone(),
         download_total: snapshot.runtime.download_total.clone(),
         last_sync: current_time(),
+        tun_enabled: snapshot.runtime.tun_enabled,
+        process_mode: snapshot.runtime.process_mode.clone(),
         error: None,
     };
 
@@ -167,8 +210,28 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
         Err(error) => errors.push(format!("版本读取失败：{error}")),
     }
 
+    match client.get_json("/configs").await {
+        Ok(config) => {
+            runtime.tun_enabled = config
+                .get("tun")
+                .and_then(|tun| tun.get("enable"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            runtime.process_mode =
+                proxy_string(&config, "find-process-mode").unwrap_or_else(|| "strict".into());
+        }
+        Err(error) => errors.push(format!("运行配置读取失败：{error}")),
+    }
+
     match client.get_json("/proxies").await {
-        Ok(proxies) => apply_proxies(&mut snapshot, &proxies),
+        Ok(proxies) => {
+            for (group_name, proxy_name) in apply_proxies(&mut snapshot, &proxies) {
+                let path = format!("/proxies/{}", encode_component(&group_name));
+                if let Err(error) = client.put_json(&path, json!({ "name": proxy_name })).await {
+                    errors.push(format!("恢复代理组“{group_name}”选择失败：{error}"));
+                }
+            }
+        }
         Err(error) => errors.push(format!("代理读取失败：{error}")),
     }
 
@@ -287,12 +350,15 @@ pub async fn test_proxy_delay(settings: SettingsMap, node_name: String) -> Delay
         .and_then(value_to_string)
         .unwrap_or_else(|| DEFAULT_TEST_URL.into());
     let path = format!(
-        "/proxies/{}/delay?timeout=5000&url={}",
+        "/proxies/{}/delay?timeout={DELAY_TEST_TIMEOUT_MS}&url={}",
         encode_component(&node_name),
         encode_component(&test_url),
     );
 
-    match client.get_json(&path).await {
+    match client
+        .get_json_with_timeout(&path, DELAY_REQUEST_TIMEOUT)
+        .await
+    {
         Ok(value) => {
             let latency = value
                 .get("delay")
@@ -310,6 +376,16 @@ pub async fn test_proxy_delay(settings: SettingsMap, node_name: String) -> Delay
             available: false,
             message: Some(error),
         },
+    }
+}
+
+fn format_request_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "请求 Mihomo 控制器超时".into()
+    } else if error.is_connect() {
+        format!("无法连接 Mihomo 控制器：{error}")
+    } else {
+        error.to_string()
     }
 }
 
@@ -340,15 +416,44 @@ fn disconnected_runtime(message: &str, controller_url: &str) -> RuntimeInfo {
         upload_total: "0 B".into(),
         download_total: "0 B".into(),
         last_sync: current_time(),
+        tun_enabled: false,
+        process_mode: "未连接".into(),
         error: Some(message.into()),
     }
 }
 
-fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) {
+fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, String)> {
     let Some(proxies) = value.get("proxies").and_then(Value::as_object) else {
-        return;
+        return Vec::new();
     };
 
+    let local_groups_by_name = snapshot
+        .groups
+        .iter()
+        .filter(|group| group.origin == "local")
+        .map(|group| (group.name.clone(), group.clone()))
+        .collect::<HashMap<_, _>>();
+    let previous_selection = snapshot
+        .groups
+        .iter()
+        .filter_map(|group| {
+            group
+                .current_node_id
+                .as_ref()
+                .map(|current| (group.id.clone(), current.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let name_to_group_id = proxies
+        .iter()
+        .filter(|(name, proxy)| is_group_proxy(name, proxy))
+        .map(|(name, _)| {
+            let id = local_groups_by_name
+                .get(name)
+                .map(|group| group.id.clone())
+                .unwrap_or_else(|| stable_id("group", name));
+            (name.clone(), id)
+        })
+        .collect::<HashMap<_, _>>();
     let mut name_to_node_id = HashMap::new();
     let mut managed_nodes = Vec::new();
 
@@ -378,7 +483,9 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) {
         });
     }
 
-    let mut managed_groups = Vec::new();
+    let mut runtime_groups = Vec::new();
+    let mut runtime_group_names = HashSet::new();
+    let mut selection_corrections = Vec::new();
     for (name, proxy) in proxies {
         if !is_group_proxy(name, proxy) {
             continue;
@@ -399,32 +506,74 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) {
             .iter()
             .filter_map(|node_name| name_to_node_id.get(node_name).cloned())
             .collect::<Vec<_>>();
-        let current_node_id =
-            proxy_string(proxy, "now").and_then(|now| name_to_node_id.get(&now).cloned());
-        let group_type = map_group_type(&proxy_string(proxy, "type").unwrap_or_default(), name);
-
-        managed_groups.push(ProxyGroup {
-            id: stable_id("group", name),
-            name: name.clone(),
-            group_type: group_type.clone(),
-            origin: MANAGED_ORIGIN.into(),
-            icon: group_icon(&group_type).into(),
-            description: "来自 Mihomo 外部控制器".into(),
-            node_ids,
-            current_node_id,
-            auto_test: group_type == "URL-Test" || group_type == "Fallback",
-            allow_manual: group_type != "URL-Test"
-                && group_type != "Direct"
-                && group_type != "Block",
+        let group_id = name_to_group_id
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| stable_id("group", name));
+        let group_ids = all_names
+            .iter()
+            .filter_map(|group_name| name_to_group_id.get(group_name).cloned())
+            .filter(|member_id| member_id != &group_id)
+            .collect::<Vec<_>>();
+        let current_node_id = previous_selection
+            .get(&group_id)
+            .filter(|member_id| node_ids.contains(member_id) || group_ids.contains(member_id))
+            .cloned()
+            .or_else(|| node_ids.first().cloned())
+            .or_else(|| group_ids.first().cloned());
+        let runtime_current_id = proxy_string(proxy, "now").and_then(|current_name| {
+            name_to_node_id
+                .get(&current_name)
+                .or_else(|| name_to_group_id.get(&current_name))
+                .cloned()
         });
+        let group_type = map_group_type(&proxy_string(proxy, "type").unwrap_or_default(), name);
+        let allow_manual =
+            group_type != "URL-Test" && group_type != "Direct" && group_type != "Block";
+        if allow_manual && current_node_id != runtime_current_id {
+            if let Some(target_name) = current_node_id.as_ref().and_then(|target_id| {
+                all_names.iter().find(|member_name| {
+                    name_to_node_id.get(*member_name) == Some(target_id)
+                        || name_to_group_id.get(*member_name) == Some(target_id)
+                })
+            }) {
+                selection_corrections.push((name.clone(), target_name.clone()));
+            }
+        }
+
+        runtime_group_names.insert(name.clone());
+        let mut runtime_group = local_groups_by_name
+            .get(name)
+            .cloned()
+            .unwrap_or(ProxyGroup {
+                id: group_id.clone(),
+                name: name.clone(),
+                group_type: group_type.clone(),
+                origin: MANAGED_ORIGIN.into(),
+                icon: group_icon(&group_type).into(),
+                description: "来自 Mihomo 外部控制器".into(),
+                node_ids: Vec::new(),
+                group_ids: Vec::new(),
+                current_node_id: None,
+                auto_test: group_type == "URL-Test" || group_type == "Fallback",
+                allow_manual,
+            });
+        runtime_group.id = group_id;
+        runtime_group.group_type = group_type;
+        runtime_group.node_ids = node_ids;
+        runtime_group.group_ids = group_ids;
+        runtime_group.current_node_id = current_node_id;
+        runtime_group.allow_manual = allow_manual;
+        runtime_groups.push(runtime_group);
     }
 
     snapshot.nodes.retain(|node| node.origin != MANAGED_ORIGIN);
-    snapshot
-        .groups
-        .retain(|group| group.origin != MANAGED_ORIGIN);
+    snapshot.groups.retain(|group| {
+        group.origin != MANAGED_ORIGIN && !runtime_group_names.contains(&group.name)
+    });
     snapshot.nodes.extend(managed_nodes);
-    snapshot.groups.extend(managed_groups);
+    snapshot.groups.extend(runtime_groups);
+    selection_corrections
 }
 
 fn apply_connections(snapshot: &mut AppSnapshot, runtime: &mut RuntimeInfo, value: &Value) {
@@ -480,29 +629,53 @@ fn apply_rules(snapshot: &mut AppSnapshot, value: &Value) {
         return;
     };
 
+    let local_rule_keys = snapshot
+        .rules
+        .iter()
+        .filter(|rule| rule.source == "local")
+        .map(|rule| (rule.rule_type.clone(), rule.content.clone()))
+        .collect::<HashSet<_>>();
     let managed_rules = rules
         .iter()
         .enumerate()
-        .map(|(index, rule)| {
+        .filter_map(|(index, rule)| {
             let raw_type = proxy_string(rule, "type").unwrap_or_else(|| "MATCH".into());
             let content = proxy_string(rule, "payload")
                 .or_else(|| proxy_string(rule, "rule"))
                 .or_else(|| proxy_string(rule, "name"))
                 .unwrap_or_else(|| "MATCH".into());
-            let policy = proxy_string(rule, "proxy")
+            let mut policy = proxy_string(rule, "proxy")
                 .or_else(|| proxy_string(rule, "adapter"))
                 .unwrap_or_else(|| "DIRECT".into());
-            RoutingRule {
+            let rule_type = map_rule_type(&raw_type);
+            if local_rule_keys.contains(&(rule_type.clone(), content.clone())) {
+                return None;
+            }
+            let rule_override = snapshot
+                .rule_overrides
+                .iter()
+                .find(|item| item.target_rule_type == rule_type && item.target_content == content);
+            if rule_override.is_some_and(|item| !item.enabled) {
+                return None;
+            }
+            if let Some(item) = rule_override {
+                policy = item.policy.clone();
+            }
+            Some(RoutingRule {
                 id: stable_id("rule", &format!("{index}:{raw_type}:{content}:{policy}")),
-                rule_type: map_rule_type(&raw_type),
+                rule_type,
                 content,
                 policy,
                 source: MANAGED_ORIGIN.into(),
                 enabled: true,
-                no_resolve: proxy_bool(rule, "noResolve").unwrap_or(false),
+                no_resolve: rule_override
+                    .map(|item| item.no_resolve)
+                    .unwrap_or_else(|| proxy_bool(rule, "noResolve").unwrap_or(false)),
                 wildcard: false,
-                note: Some("来自 Mihomo 控制器".into()),
-            }
+                note: rule_override
+                    .and_then(|item| item.note.clone())
+                    .or_else(|| Some("来自 Mihomo 控制器".into())),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -533,6 +706,7 @@ fn normalize_selection(snapshot: &mut AppSnapshot) {
             .iter()
             .find(|group| group.id == snapshot.selected_group_id)
             .and_then(|group| group.current_node_id.clone())
+            .filter(|current_id| snapshot.nodes.iter().any(|node| node.id == *current_id))
             .or_else(|| snapshot.nodes.first().map(|node| node.id.clone()))
             .unwrap_or_default();
     }
@@ -553,7 +727,7 @@ fn map_connection(value: &Value) -> Connection {
     };
     let process = proxy_string(metadata, "process")
         .or_else(|| proxy_string(metadata, "processPath"))
-        .unwrap_or_else(|| "未知进程".into());
+        .unwrap_or_else(|| "内核未识别".into());
     let app = process
         .rsplit(['/', '\\'])
         .next()
@@ -571,6 +745,9 @@ fn map_connection(value: &Value) -> Connection {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let chain = chains.into_iter().rev().collect::<Vec<_>>();
+    let policy = chain.first().cloned().unwrap_or_else(|| "DIRECT".into());
+    let node = chain.last().cloned().unwrap_or_else(|| policy.clone());
 
     Connection {
         id,
@@ -590,7 +767,9 @@ fn map_connection(value: &Value) -> Connection {
         download: format_bytes(proxy_u64(value, "download").unwrap_or(0)),
         duration: format_duration(proxy_string(value, "start").as_deref()),
         rule: proxy_string(value, "rule").unwrap_or_else(|| "MATCH".into()),
-        policy: chains.first().cloned().unwrap_or_else(|| "DIRECT".into()),
+        policy,
+        node,
+        chain,
         status: "活跃".into(),
     }
 }
@@ -808,5 +987,125 @@ mod tests {
 
         assert_eq!(snapshot.nodes.len(), 1);
         assert_eq!(snapshot.nodes[0].name, "正常节点");
+    }
+
+    #[test]
+    fn preserves_local_group_identity_when_it_appears_in_runtime_proxies() {
+        let mut snapshot = default_snapshot();
+        snapshot.groups.push(ProxyGroup {
+            id: "local-custom".into(),
+            name: "手动前置".into(),
+            group_type: "Selector".into(),
+            origin: "local".into(),
+            icon: "local-icon".into(),
+            description: "本地配置".into(),
+            node_ids: vec!["old-node".into()],
+            group_ids: Vec::new(),
+            current_node_id: None,
+            auto_test: false,
+            allow_manual: true,
+        });
+        let proxies = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "手动前置": { "type": "Selector", "all": ["香港节点"], "now": "香港节点" },
+                "AI": { "type": "Selector", "all": ["手动前置"], "now": "手动前置" }
+            }
+        });
+
+        apply_proxies(&mut snapshot, &proxies);
+
+        let local_group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.name == "手动前置")
+            .expect("应保留本地代理组");
+        assert_eq!(local_group.id, "local-custom");
+        assert_eq!(local_group.origin, "local");
+        assert_eq!(local_group.icon, "local-icon");
+        assert_eq!(
+            snapshot
+                .groups
+                .iter()
+                .find(|group| group.name == "AI")
+                .expect("应保留托管组")
+                .group_ids,
+            vec!["local-custom"]
+        );
+    }
+
+    #[test]
+    fn maps_nested_proxy_groups_and_defaults_to_first_node() {
+        let mut snapshot = default_snapshot();
+        let proxies = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "地区组": { "type": "Selector", "all": ["香港节点"] },
+                "总选择": { "type": "Selector", "all": ["地区组", "美国节点"], "now": "地区组" }
+            }
+        });
+
+        let corrections = apply_proxies(&mut snapshot, &proxies);
+
+        let parent = snapshot
+            .groups
+            .iter()
+            .find(|group| group.name == "总选择")
+            .expect("应生成总选择代理组");
+        assert_eq!(parent.group_ids, vec![stable_id("group", "地区组")]);
+        assert_eq!(
+            parent.current_node_id.as_deref(),
+            Some(stable_id("node", "美国节点").as_str())
+        );
+        assert!(corrections.contains(&("总选择".into(), "美国节点".into())));
+    }
+
+    #[test]
+    fn preserves_existing_proxy_selection_across_subscription_refreshes() {
+        let mut snapshot = default_snapshot();
+        let initial = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "手动选择": { "type": "Selector", "all": ["香港节点", "美国节点"], "now": "香港节点" }
+            }
+        });
+        apply_proxies(&mut snapshot, &initial);
+        let group_id = stable_id("group", "手动选择");
+        let us_node_id = stable_id("node", "美国节点");
+        snapshot
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .expect("应生成手动选择代理组")
+            .current_node_id = Some(us_node_id.clone());
+
+        let corrections = apply_proxies(&mut snapshot, &initial);
+
+        let group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .expect("刷新后应保留代理组");
+        assert_eq!(group.current_node_id.as_deref(), Some(us_node_id.as_str()));
+        assert_eq!(corrections, vec![("手动选择".into(), "美国节点".into())]);
+
+        let without_us = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "手动选择": { "type": "Selector", "all": ["香港节点"] }
+            }
+        });
+        apply_proxies(&mut snapshot, &without_us);
+        let group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .expect("更新后应保留代理组");
+        assert_eq!(
+            group.current_node_id.as_deref(),
+            Some(stable_id("node", "香港节点").as_str())
+        );
     }
 }

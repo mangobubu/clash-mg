@@ -32,6 +32,7 @@ import type { TableColumnsType } from "antd";
 import { PageHeader, Panel, StatusDot } from "../components/Common";
 import { useAppStore } from "../store/useAppStore";
 import type { RoutingRule, RuleOrigin, RuleType } from "../types";
+import { getRulePolicyNames } from "../utils/proxyGroups";
 
 const { Text } = Typography;
 
@@ -112,7 +113,27 @@ export function RulesPage() {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const draggedRuleIdRef = useRef<string | null>(null);
   const [form] = Form.useForm<RuleFormValues>();
-  const { rules, addRule, updateRule, deleteRule, reorderRule } = useAppStore();
+  const {
+    groups,
+    rules,
+    ruleOverrides,
+    addRule,
+    updateRule,
+    deleteRule,
+    reorderRule,
+    setRuleOverride,
+  } = useAppStore();
+
+  const rulePolicyOptions = useMemo(
+    () => getRulePolicyNames(groups).map((value) => ({ label: value, value })),
+    [groups],
+  );
+  const isRuleOverridden = (rule: RoutingRule) => ruleOverrides.some((item) =>
+    item.targetType === rule.type && item.targetContent === rule.content);
+  const saveRuleState = (target: RoutingRule, next: RoutingRule) => {
+    if (getRuleOrigin(target.source) === "managed") setRuleOverride(target, next);
+    else updateRule(next);
+  };
 
   const filtered = useMemo(
     () =>
@@ -136,7 +157,7 @@ export function RulesPage() {
     form.resetFields();
     form.setFieldsValue({
       type: "DOMAIN-SUFFIX",
-      policy: "ChatGPT",
+      policy: rulePolicyOptions[0]?.value ?? "DIRECT",
       enabled: true,
       noResolve: false,
       wildcard: false,
@@ -171,7 +192,7 @@ export function RulesPage() {
       wildcard: values.wildcard,
       note: values.note,
     };
-    if (editing) updateRule(rule);
+    if (editing) saveRuleState(editing, rule);
     else addRule(rule);
     setModalOpen(false);
     message.success(editing ? "规则已保存" : "规则已添加");
@@ -256,10 +277,10 @@ export function RulesPage() {
       title: "来源",
       dataIndex: "source",
       width: 100,
-      render: (source: RoutingRule["source"]) => {
-        const origin = getRuleOrigin(source);
+      render: (_: RoutingRule["source"], record) => {
+        const origin = getRuleOrigin(record.source);
         const meta = ruleOriginMeta[origin];
-        return <Tag color={meta.color}>{meta.label}</Tag>;
+        return <Space size={4}><Tag color={meta.color}>{meta.label}</Tag>{isRuleOverridden(record) && <Tag color="blue">本地覆写</Tag>}</Space>;
       },
     },
     {
@@ -270,7 +291,7 @@ export function RulesPage() {
         <button
           className="status-button"
           onClick={() =>
-            updateRule({
+            saveRuleState(record, {
               ...record,
               source: getRuleOrigin(record.source),
               enabled: !enabled,
@@ -311,9 +332,14 @@ export function RulesPage() {
                 },
               ],
               onClick: ({ key }) => {
-                if (key === "delete") deleteRule(record.id);
+                if (key === "delete") {
+                  if (getRuleOrigin(record.source) === "managed") {
+                    saveRuleState(record, { ...record, enabled: false });
+                    message.success("托管规则已通过本地覆写禁用");
+                  } else deleteRule(record.id);
+                }
                 if (key === "toggle")
-                  updateRule({
+                  saveRuleState(record, {
                     ...record,
                     source: getRuleOrigin(record.source),
                     enabled: !record.enabled,
@@ -436,6 +462,7 @@ export function RulesPage() {
                 rules={[{ required: true }]}
               >
                 <Select
+                  disabled={editing ? getRuleOrigin(editing.source) === "managed" : false}
                   options={Object.keys(typeColor).map((value) => ({
                     label: value,
                     value,
@@ -447,24 +474,14 @@ export function RulesPage() {
                 name="content"
                 rules={[{ required: true, message: "请输入规则内容" }]}
               >
-                <Input placeholder="例如：openai.com" />
+                <Input disabled={editing ? getRuleOrigin(editing.source) === "managed" : false} placeholder="例如：openai.com" />
               </Form.Item>
               <Form.Item
                 label="策略组"
                 name="policy"
                 rules={[{ required: true }]}
               >
-                <Select
-                  options={[
-                    "ChatGPT",
-                    "全球直连",
-                    "搜索服务",
-                    "直连",
-                    "代理",
-                    "媒体分流",
-                    "广告拦截",
-                  ].map((value) => ({ label: value, value }))}
-                />
+                <Select showSearch optionFilterProp="label" options={rulePolicyOptions} />
               </Form.Item>
               <Form.Item
                 label="启用规则"

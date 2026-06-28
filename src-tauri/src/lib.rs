@@ -8,6 +8,7 @@ mod mihomo;
 mod models;
 mod storage;
 mod subscription;
+mod system_proxy;
 
 use models::{AppSnapshot, DelayResult, LocalSubscriptionRefreshResult, SettingsMap};
 
@@ -106,7 +107,51 @@ async fn get_app_snapshot(app: tauri::AppHandle) -> Result<AppSnapshot, String> 
 
 #[tauri::command]
 async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Result<(), String> {
-    storage::save_snapshot(&app, &snapshot)
+    let previous = storage::load_snapshot(&app)?;
+    let effective_config_changed =
+        core::runtime_config_changed(&previous.settings, &snapshot.settings)
+            || core::proxy_config_changed(&previous, &snapshot)
+            || core::rule_config_changed(&previous, &snapshot);
+    if effective_config_changed {
+        core::sync_runtime_config(&app, &snapshot).await?;
+    }
+    let system_proxy_enabled = setting_bool(&snapshot.settings, "systemProxy", false);
+    let system_proxy_changed =
+        setting_bool(&previous.settings, "systemProxy", false) != system_proxy_enabled;
+    let mixed_port_changed = setting_u16(&previous.settings, "mixedPort", 7890)
+        != setting_u16(&snapshot.settings, "mixedPort", 7890);
+    let system_proxy_requires_apply =
+        system_proxy_changed || (system_proxy_enabled && mixed_port_changed);
+    if system_proxy_requires_apply {
+        system_proxy::apply(
+            &app,
+            system_proxy_enabled,
+            setting_u16(&snapshot.settings, "mixedPort", 7890),
+        )?;
+    }
+    if let Err(error) = storage::save_snapshot(&app, &snapshot) {
+        let mut rollback_errors = Vec::new();
+        if effective_config_changed {
+            if let Err(rollback_error) = core::sync_runtime_config(&app, &previous).await {
+                rollback_errors.push(format!("恢复运行配置失败：{rollback_error}"));
+            }
+        }
+        if system_proxy_requires_apply {
+            if let Err(rollback_error) = system_proxy::apply(
+                &app,
+                setting_bool(&previous.settings, "systemProxy", false),
+                setting_u16(&previous.settings, "mixedPort", 7890),
+            ) {
+                rollback_errors.push(format!("恢复系统代理失败：{rollback_error}"));
+            }
+        }
+        return Err(if rollback_errors.is_empty() {
+            format!("保存应用状态失败：{error}；已恢复原运行状态")
+        } else {
+            format!("保存应用状态失败：{error}；{}", rollback_errors.join("；"))
+        });
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -115,6 +160,7 @@ async fn refresh_runtime_data(
     snapshot: AppSnapshot,
 ) -> Result<AppSnapshot, String> {
     let refreshed = mihomo::refresh_runtime_data(snapshot).await;
+    let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
 }
@@ -127,6 +173,7 @@ async fn select_proxy_node(
     node_name: String,
 ) -> Result<AppSnapshot, String> {
     let refreshed = mihomo::select_proxy_node(snapshot, group_name, node_name).await?;
+    let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
 }
@@ -138,6 +185,7 @@ async fn close_runtime_connections(
     ids: Vec<String>,
 ) -> Result<AppSnapshot, String> {
     let refreshed = mihomo::close_connections(snapshot, ids).await?;
+    let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
 }
@@ -149,6 +197,7 @@ async fn refresh_proxy_providers(
     provider_names: Vec<String>,
 ) -> Result<AppSnapshot, String> {
     let refreshed = mihomo::refresh_proxy_providers(snapshot, provider_names).await?;
+    let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
 }
@@ -162,6 +211,24 @@ async fn refresh_local_subscriptions(
     let refreshed =
         subscription::refresh_local_subscriptions(&app, snapshot, subscription_ids).await;
     storage::save_snapshot(&app, &refreshed.snapshot)?;
+    Ok(refreshed)
+}
+
+#[tauri::command]
+async fn delete_local_subscription(
+    app: tauri::AppHandle,
+    snapshot: AppSnapshot,
+    subscription_id: String,
+) -> Result<AppSnapshot, String> {
+    let mut refreshed =
+        subscription::delete_local_subscription(&app, snapshot, &subscription_id).await?;
+    mihomo::push_runtime_log(
+        &mut refreshed,
+        "SUCCESS",
+        "订阅",
+        "已删除订阅及其关联代理组、节点和规则",
+    );
+    storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
 }
 
@@ -187,7 +254,33 @@ async fn start_mihomo_core(
 ) -> Result<core::MihomoCoreLaunchResult, String> {
     let mut snapshot = storage::load_snapshot(&app)?;
     snapshot.settings = settings;
-    core::start_core(app, snapshot).await
+    let result = core::start_core(app.clone(), snapshot.clone()).await?;
+    if result.controller_ready {
+        core::sync_runtime_config(&app, &snapshot).await?;
+    }
+    if result.controller_ready && setting_bool(&snapshot.settings, "systemProxy", false) {
+        system_proxy::apply(
+            &app,
+            true,
+            setting_u16(&snapshot.settings, "mixedPort", 7890),
+        )?;
+    }
+    Ok(result)
+}
+
+fn setting_bool(settings: &SettingsMap, key: &str, fallback: bool) -> bool {
+    settings
+        .get(key)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(fallback)
+}
+
+fn setting_u16(settings: &SettingsMap, key: &str, fallback: u16) -> u16 {
+    settings
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(fallback)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -203,6 +296,7 @@ pub fn run() {
             close_runtime_connections,
             refresh_proxy_providers,
             refresh_local_subscriptions,
+            delete_local_subscription,
             test_proxy_delay,
             get_mihomo_core_status,
             download_mihomo_core,

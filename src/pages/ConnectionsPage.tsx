@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CloseCircleOutlined,
   DeleteOutlined,
@@ -25,6 +25,12 @@ export function ConnectionsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const { connections, closeConnections, clearClosedConnections, refreshRuntimeData } = useAppStore();
 
+  useEffect(() => {
+    void refreshRuntimeData();
+    const timer = window.setInterval(() => void refreshRuntimeData(), 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshRuntimeData]);
+
   const processOptions = useMemo(() => [
     { label: "所有进程", value: "all" },
     ...Array.from(new Set(connections.map((connection) => connection.process)))
@@ -33,7 +39,7 @@ export function ConnectionsPage() {
   ], [connections]);
 
   const filtered = useMemo(() => connections.filter((connection) =>
-    `${connection.app}${connection.process}${connection.target}${connection.ip}`.toLowerCase().includes(search.toLowerCase())
+    `${connection.app}${connection.process}${connection.target}${connection.ip}${connection.policy}${connection.node}${connection.chain.join("")}`.toLowerCase().includes(search.toLowerCase())
     && (protocol === "all" || connection.protocol === protocol)
     && (status === "all" || connection.status === status)
     && (policy === "all" || connection.policy === policy)
@@ -66,6 +72,7 @@ export function ConnectionsPage() {
     { title: "持续时间", dataIndex: "duration", width: 110 },
     { title: "规则", dataIndex: "rule", width: 120, render: (value: string) => <Tag color={value === "广告拦截" ? "red" : value === "媒体分流" ? "green" : value === "ChatGPT" ? "purple" : "blue"}>{value}</Tag> },
     { title: "策略组", dataIndex: "policy", width: 140 },
+    { title: "最终节点", dataIndex: "node", width: 180, ellipsis: true },
     { title: "状态", dataIndex: "status", width: 90, render: (value: Connection["status"]) => <StatusDot status={value === "活跃" ? "success" : "default"}>{value}</StatusDot> },
     { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, record) => <Space><Button icon={<EyeOutlined />} onClick={() => void openConnectionDetail(record)} aria-label="查看详情" /><Button icon={<CloseCircleOutlined />} disabled={record.status === "已关闭"} onClick={() => closeItems([record.id])} aria-label="关闭连接" /></Space> },
   ];

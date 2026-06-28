@@ -64,6 +64,19 @@ export async function refreshLocalSubscriptions(snapshot: AppData, subscriptionI
   return invoke<LocalSubscriptionRefreshResult>("refresh_local_subscriptions", { snapshot, subscriptionIds });
 }
 
+export async function deleteLocalSubscription(snapshot: AppData, subscriptionId: string): Promise<AppData> {
+  if (!(await isTauriRuntime())) {
+    const next = {
+      ...snapshot,
+      subscriptions: snapshot.subscriptions.filter((subscription) => subscription.id !== subscriptionId),
+    };
+    localStorage.setItem(browserStorageKey, JSON.stringify(next));
+    return next;
+  }
+
+  return invoke<AppData>("delete_local_subscription", { snapshot, subscriptionId });
+}
+
 export async function testRuntimeProxyDelay(settings: AppSettings, nodeName: string): Promise<DelayResult> {
   if (!(await isTauriRuntime())) return { latency: 0, available: false, message: "浏览器预览环境无法访问 Mihomo 控制器" };
   return invoke<DelayResult>("test_proxy_delay", { settings, nodeName });

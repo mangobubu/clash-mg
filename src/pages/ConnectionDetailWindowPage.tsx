@@ -76,7 +76,9 @@ export function ConnectionDetailWindowPage() {
             { key: "traffic", label: "流量", children: `上传 ${connection.upload} / 下载 ${connection.download}` },
             { key: "duration", label: "持续时间", children: connection.duration },
             { key: "rule", label: "命中规则", children: <Tag color={connection.rule === "广告拦截" ? "red" : connection.rule === "媒体分流" ? "green" : connection.rule === "ChatGPT" ? "purple" : "blue"}>{connection.rule}</Tag> },
-            { key: "policy", label: "代理策略", children: connection.policy },
+            { key: "policy", label: "命中策略组", children: connection.policy },
+            { key: "node", label: "最终节点", children: connection.node },
+            { key: "chain", label: "完整代理链", children: connection.chain.join(" → ") },
             { key: "status", label: "状态", children: <StatusDot status={connection.status === "活跃" ? "success" : "default"}>{connection.status}</StatusDot> },
           ]}
         />

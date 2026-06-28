@@ -72,6 +72,7 @@ export function SubscriptionsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [detail, setDetail] = useState<Subscription | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [refreshState, setRefreshState] = useState<SubscriptionRefreshState | null>(null);
   const refreshLockRef = useRef(false);
   const [form] = Form.useForm<SubscriptionFormValues>();
@@ -135,12 +136,20 @@ export function SubscriptionsPage() {
     message.success("订阅链接已保存，点击“立即更新”后将校验并应用到 Mihomo");
   };
 
-  const confirmDelete = (subscription: Subscription) => Modal.confirm({
-    title: `删除订阅“${subscription.name}”？`,
-    content: "此操作会删除当前本地保存的订阅记录。",
-    okText: "删除", cancelText: "取消", okButtonProps: { danger: true },
-    onOk: () => { deleteSubscription(subscription.id); if (detail?.id === subscription.id) setDetail(null); },
-  });
+  const handleDelete = async (subscription: Subscription) => {
+    if (deletingId) return;
+    setDeletingId(subscription.id);
+    try {
+      await deleteSubscription(subscription.id);
+      setSelectedIds((ids) => ids.filter((id) => id !== subscription.id));
+      if (detail?.id === subscription.id) setDetail(null);
+      message.success(`已删除订阅“${subscription.name}”及其关联代理组、节点和规则`);
+    } catch (error) {
+      message.error(`删除订阅失败：${String(error)}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const handleRefreshSubscriptions = async (ids: string[] | undefined, origin: RefreshOrigin) => {
     if (refreshLockRef.current) return;
@@ -192,8 +201,8 @@ export function SubscriptionsPage() {
       render: (_, record) => <Space onClick={(event) => event.stopPropagation()}>
         <Button type="text" icon={<ReloadOutlined />} loading={isSingleRefreshing(record.id)} disabled={Boolean(refreshState) && !isSingleRefreshing(record.id)} onClick={() => void handleRefreshSubscriptions([record.id], "single")} aria-label="立即更新" />
         <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)} aria-label="编辑订阅" />
-        <Dropdown menu={{ items: [{ key: "copy", icon: <CopyOutlined />, label: "复制订阅" }, { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true }], onClick: ({ key }) => key === "delete" ? confirmDelete(record) : navigator.clipboard.writeText(record.url).then(() => message.success("订阅链接已复制")) }}>
-          <Button type="text" icon={<MoreOutlined />} aria-label="更多操作" />
+        <Dropdown disabled={Boolean(deletingId)} menu={{ items: [{ key: "copy", icon: <CopyOutlined />, label: "复制订阅" }, { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true }], onClick: ({ key }) => key === "delete" ? void handleDelete(record) : navigator.clipboard.writeText(record.url).then(() => message.success("订阅链接已复制")) }}>
+          <Button type="text" icon={<MoreOutlined />} loading={deletingId === record.id} aria-label="更多操作" />
         </Dropdown>
       </Space>,
     },

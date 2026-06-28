@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { message } from "antd";
 import {
   closeRuntimeConnections,
+  deleteLocalSubscription,
   loadAppSnapshot,
   refreshLocalSubscriptions,
   refreshRuntimeSnapshot,
@@ -46,8 +48,10 @@ const toAppData = (state: AppState): AppData => ({
   selectedGroupId: state.selectedGroupId,
   nodes: state.nodes,
   groups: state.groups,
+  proxyGroupOverrides: state.proxyGroupOverrides,
   subscriptions: state.subscriptions,
   rules: state.rules,
+  ruleOverrides: state.ruleOverrides,
   connections: state.connections,
   logs: state.logs,
   activities: state.activities,
@@ -64,6 +68,15 @@ const queuePersist = () => {
   persistTimer = window.setTimeout(() => {
     void saveAppSnapshot(toAppData(useAppStore.getState())).catch((error) => {
       console.error("应用状态保存失败", error);
+      void loadAppSnapshot()
+        .then(({ data, backendAvailable }) => {
+          applySnapshot(data, backendAvailable);
+          appendLog("ERROR", "运行配置", `设置应用失败，已恢复上次有效配置：${String(error)}`);
+          message.error({ content: `设置应用失败：${String(error)}`, duration: 6 });
+        })
+        .catch((reloadError) => {
+          console.error("恢复上次有效配置失败", reloadError);
+        });
     });
   }, 120);
 };
@@ -71,6 +84,14 @@ const queuePersist = () => {
 const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
   useAppStore.setState({
     ...snapshot,
+    groups: snapshot.groups.map((group) => ({ ...group, groupIds: group.groupIds ?? [] })),
+    proxyGroupOverrides: snapshot.proxyGroupOverrides ?? [],
+    connections: snapshot.connections.map((connection) => ({
+      ...connection,
+      node: connection.node ?? connection.policy,
+      chain: connection.chain ?? [connection.policy],
+    })),
+    ruleOverrides: snapshot.ruleOverrides ?? [],
     subscriptions: snapshot.subscriptions.filter((subscription) => !isRuntimeProviderRecord(subscription)),
     hydrated: true,
     backendAvailable,
@@ -164,22 +185,25 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     queuePersist();
   },
-  selectNode: (nodeId, groupId) => {
+  selectProxy: (proxyId, groupId) => {
     set((state) => {
-      const node = state.nodes.find((item) => item.id === nodeId);
-      if (!node) return state;
+      const node = state.nodes.find((item) => item.id === proxyId);
+      const nestedGroup = state.groups.find((item) => item.id === proxyId);
+      const selectedProxy = node ?? nestedGroup;
+      if (!selectedProxy) return state;
       const targetGroupId = groupId ?? state.selectedGroupId;
+      const targetLabel = node ? "节点" : "代理组";
       return {
-        selectedNodeId: nodeId,
+        selectedNodeId: node ? node.id : state.selectedNodeId,
         groups: state.groups.map((group) =>
-          group.id === targetGroupId ? { ...group, currentNodeId: nodeId } : group,
+          group.id === targetGroupId ? { ...group, currentNodeId: proxyId } : group,
         ),
         logs: [
-          { id: crypto.randomUUID(), time: currentTime(), level: "SUCCESS", source: "代理", content: `已切换至节点“${node.name}”` },
+          { id: crypto.randomUUID(), time: currentTime(), level: "SUCCESS", source: "代理", content: `已切换至${targetLabel}“${selectedProxy.name}”` },
           ...state.logs,
         ],
         activities: [
-          { id: crypto.randomUUID(), time: currentTime(), kind: "switch", content: `切换节点至 ${node.name}` },
+          { id: crypto.randomUUID(), time: currentTime(), kind: "switch", content: `切换至${targetLabel} ${selectedProxy.name}` },
           ...state.activities,
         ],
       };
@@ -188,9 +212,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     const current = get();
     const group = current.groups.find((item) => item.id === (groupId ?? current.selectedGroupId));
-    const node = current.nodes.find((item) => item.id === nodeId);
-    if (group?.origin === "managed" && node) {
-      void selectRuntimeProxy(toAppData(current), group.name, node.name)
+    const selectedProxy = current.nodes.find((item) => item.id === proxyId)
+      ?? current.groups.find((item) => item.id === proxyId);
+    if (group && selectedProxy) {
+      void selectRuntimeProxy(toAppData(current), group.name, selectedProxy.name)
         .then((snapshot) => applySnapshot(snapshot, true))
         .catch((error) => appendLog("ERROR", "代理", `Mihomo 代理切换失败：${String(error)}`));
     }
@@ -232,6 +257,42 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({ groups: state.groups.map((item) => (item.id === group.id ? group : item)) }));
     queuePersist();
   },
+  setProxyGroupOverride: (targetGroup, addedGroupIds) => {
+    set((state) => {
+      const previousOverride = state.proxyGroupOverrides.find(
+        (item) => item.targetGroupId === targetGroup.id,
+      );
+      const previousAddedIds = new Set(previousOverride?.addedGroupIds ?? []);
+      const nextOverrides = state.proxyGroupOverrides.filter(
+        (item) => item.targetGroupId !== targetGroup.id,
+      );
+      if (addedGroupIds.length) {
+        nextOverrides.push({
+          targetGroupId: targetGroup.id,
+          targetGroupName: targetGroup.name,
+          addedGroupIds,
+        });
+      }
+
+      return {
+        proxyGroupOverrides: nextOverrides,
+        groups: state.groups.map((group) => {
+          if (group.id !== targetGroup.id) return group;
+          const baseGroupIds = group.groupIds.filter((id) => !previousAddedIds.has(id));
+          const groupIds = [...new Set([...baseGroupIds, ...addedGroupIds])];
+          const validCurrentIds = new Set([...group.nodeIds, ...groupIds]);
+          return {
+            ...group,
+            groupIds,
+            currentNodeId: group.currentNodeId && validCurrentIds.has(group.currentNodeId)
+              ? group.currentNodeId
+              : group.nodeIds[0] ?? groupIds[0],
+          };
+        }),
+      };
+    });
+    queuePersist();
+  },
   refreshLatencies: () => {
     const ids = get().nodes.map((node) => node.id);
     void Promise.all(ids.map((id) => get().testNodeLatency(id)));
@@ -251,9 +312,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({ subscriptions: state.subscriptions.map((item) => (item.id === subscription.id ? subscription : item)) }));
     queuePersist();
   },
-  deleteSubscription: (id) => {
-    set((state) => ({ subscriptions: state.subscriptions.filter((item) => item.id !== id) }));
-    queuePersist();
+  deleteSubscription: async (id) => {
+    window.clearTimeout(persistTimer);
+    const snapshot = await deleteLocalSubscription(toAppData(get()), id);
+    applySnapshot(snapshot, get().backendAvailable);
   },
   refreshSubscriptions: async (ids) => {
     const current = get();
@@ -291,6 +353,37 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   updateRule: (rule) => {
     set((state) => ({ rules: state.rules.map((item) => (item.id === rule.id ? rule : item)) }));
+    queuePersist();
+  },
+  setRuleOverride: (targetRule, overrideRule) => {
+    set((state) => ({
+      ruleOverrides: [
+        ...state.ruleOverrides.filter((item) =>
+          item.targetType !== targetRule.type || item.targetContent !== targetRule.content),
+        {
+          targetType: targetRule.type,
+          targetContent: targetRule.content,
+          policy: overrideRule.policy,
+          enabled: overrideRule.enabled,
+          noResolve: overrideRule.noResolve,
+          note: overrideRule.note,
+        },
+      ],
+      rules: state.rules.map((item) => item.id === targetRule.id ? {
+        ...item,
+        policy: overrideRule.policy,
+        enabled: overrideRule.enabled,
+        noResolve: overrideRule.noResolve,
+        note: overrideRule.note,
+      } : item),
+    }));
+    queuePersist();
+  },
+  clearRuleOverride: (targetRule) => {
+    set((state) => ({
+      ruleOverrides: state.ruleOverrides.filter((item) =>
+        item.targetType !== targetRule.type || item.targetContent !== targetRule.content),
+    }));
     queuePersist();
   },
   deleteRule: (id) => {
@@ -332,7 +425,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   updateSetting: (key, value) => {
     set((state) => ({
-      settings: { ...state.settings, [key]: value },
+      settings: {
+        ...state.settings,
+        [key]: value,
+        ...(key === "proxyMode" ? { coreMode: value } : {}),
+        ...(key === "coreMode" ? { proxyMode: value } : {}),
+      },
       ...(key === "navCollapsed" ? { sidebarCollapsed: Boolean(value) } : {}),
     }));
     queuePersist();

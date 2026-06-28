@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -22,7 +22,7 @@ use crate::{
     core,
     defaults::current_time,
     mihomo::{self, MihomoClient},
-    models::{AppSnapshot, LocalSubscriptionRefreshResult, Subscription},
+    models::{AppSnapshot, LocalSubscriptionRefreshResult, ProxyNode, SettingsMap, Subscription},
 };
 
 const MAX_SUBSCRIPTION_BYTES: usize = 16 * 1024 * 1024;
@@ -59,6 +59,8 @@ enum ParsedSubscription {
         proxies: Vec<Value>,
         groups: Vec<Value>,
         providers: Mapping,
+        rules: Vec<Value>,
+        rule_providers: Mapping,
     },
     ProviderContent,
 }
@@ -197,6 +199,120 @@ pub async fn refresh_local_subscriptions(
     result
 }
 
+pub async fn delete_local_subscription(
+    app: &AppHandle,
+    mut snapshot: AppSnapshot,
+    subscription_id: &str,
+) -> Result<AppSnapshot, String> {
+    let Some(index) = snapshot
+        .subscriptions
+        .iter()
+        .position(|subscription| subscription.id == subscription_id)
+    else {
+        return Err("要删除的订阅不存在".into());
+    };
+    let removed_subscription = snapshot.subscriptions.remove(index);
+    let core_dir = core::core_dir(app)?;
+    let subscription_dir = core_dir.join(SUBSCRIPTION_DIR_NAME);
+    let cache_path = subscription_cache_path(&subscription_dir, subscription_id);
+    let cache_backup = FileBackup::capture(cache_path.clone())?;
+    let cached_content = cache_backup
+        .content
+        .as_ref()
+        .and_then(|content| String::from_utf8(content.clone()).ok());
+
+    if cache_backup.content.is_none() {
+        prune_removed_subscription_data(&mut snapshot, &removed_subscription, None);
+        return Ok(snapshot);
+    }
+
+    let candidate_content = build_effective_config(app, &snapshot)
+        .map_err(|error| format!("删除订阅后生成配置失败：{error}"))?;
+    let controller = if snapshot.runtime.controller_connected {
+        Some(
+            MihomoClient::from_settings(&snapshot.settings)
+                .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?,
+        )
+    } else {
+        None
+    };
+    let candidate_path = core_dir.join(CANDIDATE_CONFIG_NAME);
+    replace_file(&candidate_path, candidate_content.as_bytes())
+        .map_err(|error| format!("写入删除订阅后的候选配置失败：{error}"))?;
+
+    let executable = core::core_executable_path(app)?;
+    if executable.is_file() {
+        if let Err(error) = validate_config(app, &candidate_path) {
+            let _ = fs::remove_file(&candidate_path);
+            return Err(format!("删除订阅后的 Mihomo 配置校验失败：{error}"));
+        }
+    }
+
+    let active_path = core_dir.join(ACTIVE_CONFIG_NAME);
+    let active_backup = FileBackup::capture(active_path.clone())?;
+    if let Err(error) = replace_file(&active_path, candidate_content.as_bytes()) {
+        let _ = fs::remove_file(&candidate_path);
+        return Err(format!("替换删除订阅后的有效配置失败：{error}"));
+    }
+    let _ = fs::remove_file(&candidate_path);
+
+    if let Some(controller) = &controller {
+        if let Err(error) = controller.reload_config(&candidate_content).await {
+            let rollback = rollback_applied_files(
+                controller,
+                &active_backup,
+                std::slice::from_ref(&cache_backup),
+            )
+            .await;
+            return Err(reload_error_with_rollback(
+                format!("删除订阅后通知 Mihomo 热重载失败：{error}"),
+                rollback,
+            ));
+        }
+        if let Err(error) = controller.verify_runtime_proxies().await {
+            let rollback = rollback_applied_files(
+                controller,
+                &active_backup,
+                std::slice::from_ref(&cache_backup),
+            )
+            .await;
+            return Err(reload_error_with_rollback(
+                format!("删除订阅后无法读取 Mihomo 代理节点：{error}"),
+                rollback,
+            ));
+        }
+    }
+
+    if let Err(error) = fs::remove_file(&cache_path) {
+        let rollback = if let Some(controller) = &controller {
+            rollback_applied_files(
+                controller,
+                &active_backup,
+                std::slice::from_ref(&cache_backup),
+            )
+            .await
+        } else {
+            restore_active_and_subscriptions(&active_backup, std::slice::from_ref(&cache_backup))
+        };
+        return Err(with_rollback_result(
+            format!("删除订阅缓存失败：{error}"),
+            rollback,
+        ));
+    }
+
+    if controller.is_some() {
+        let refreshed = mihomo::refresh_runtime_data(snapshot).await;
+        enrich_runtime_nodes(app, refreshed)
+    } else {
+        prune_removed_subscription_data(
+            &mut snapshot,
+            &removed_subscription,
+            cached_content.as_deref(),
+        );
+        Ok(snapshot)
+    }
+}
+
 async fn apply_downloads(
     app: &AppHandle,
     snapshot: &AppSnapshot,
@@ -307,7 +423,8 @@ async fn apply_downloads(
         ));
     }
 
-    Ok(mihomo::refresh_runtime_data(snapshot.clone()).await)
+    let refreshed = mihomo::refresh_runtime_data(snapshot.clone()).await;
+    enrich_runtime_nodes(app, refreshed)
 }
 
 async fn rollback_applied_files(
@@ -348,9 +465,16 @@ pub(crate) fn build_effective_config(
         .as_mapping_mut()
         .ok_or_else(|| "基础配置根节点必须是 YAML 对象".to_string())?;
 
+    apply_runtime_settings(root_mapping, &snapshot.settings)?;
+
     let mut proxies = take_sequence(root_mapping, "proxies")?;
     let mut groups = take_sequence(root_mapping, "proxy-groups")?;
     let mut providers = take_mapping(root_mapping, "proxy-providers")?;
+    let mut rules = take_sequence(root_mapping, "rules")?;
+    let mut rule_providers = take_mapping(root_mapping, "rule-providers")?;
+    if !has_custom_base(snapshot) {
+        rules.clear();
+    }
     let subscription_dir = core::core_dir(app)?.join(SUBSCRIPTION_DIR_NAME);
 
     for subscription in snapshot.subscriptions.iter().filter(|subscription| {
@@ -369,16 +493,537 @@ pub(crate) fn build_effective_config(
             &mut proxies,
             &mut groups,
             &mut providers,
+            &mut rules,
+            &mut rule_providers,
         )?;
     }
 
+    apply_local_proxy_groups(&mut groups, snapshot)?;
+    apply_proxy_group_overrides(&mut groups, snapshot)?;
+    apply_local_rules(&mut rules, snapshot);
+    apply_rule_overrides(&mut rules, snapshot)?;
+    apply_default_route(&mut rules, &groups, snapshot);
     root_mapping.insert(key("proxies"), Value::Sequence(proxies));
     root_mapping.insert(key("proxy-groups"), Value::Sequence(groups));
+    root_mapping.insert(key("rules"), Value::Sequence(rules));
     if !providers.is_empty() {
         root_mapping.insert(key("proxy-providers"), Value::Mapping(providers));
     }
-
+    if !rule_providers.is_empty() {
+        root_mapping.insert(key("rule-providers"), Value::Mapping(rule_providers));
+    }
     serde_yaml::to_string(&root).map_err(|error| format!("序列化合并配置失败：{error}"))
+}
+
+fn apply_local_proxy_groups(groups: &mut Vec<Value>, snapshot: &AppSnapshot) -> Result<(), String> {
+    let mut existing_names = groups
+        .iter()
+        .filter_map(item_name)
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
+    let node_names = snapshot
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect::<HashMap<_, _>>();
+    let group_names = snapshot
+        .groups
+        .iter()
+        .map(|group| (group.id.as_str(), group.name.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    for group in snapshot
+        .groups
+        .iter()
+        .filter(|group| group.origin == "local")
+    {
+        if !existing_names.insert(group.name.clone()) {
+            return Err(format!("本地代理组“{}”与订阅代理组重名", group.name));
+        }
+
+        let mut member_names = Vec::new();
+        for member_id in group.node_ids.iter().chain(&group.group_ids) {
+            let member_name = node_names
+                .get(member_id.as_str())
+                .or_else(|| group_names.get(member_id.as_str()))
+                .ok_or_else(|| {
+                    format!("本地代理组“{}”包含已不存在的成员 {member_id}", group.name)
+                })?;
+            if *member_name == group.name {
+                return Err(format!("本地代理组“{}”不能引用自身", group.name));
+            }
+            if !member_names.contains(member_name) {
+                member_names.push(*member_name);
+            }
+        }
+        if member_names.is_empty() {
+            return Err(format!("本地代理组“{}”至少需要一个成员", group.name));
+        }
+
+        let mut value = Mapping::new();
+        value.insert(key("name"), Value::String(group.name.clone()));
+        value.insert(
+            key("type"),
+            Value::String(
+                match group.group_type.as_str() {
+                    "Fallback" => "fallback",
+                    "URL-Test" => "url-test",
+                    "Load-Balance" => "load-balance",
+                    _ => "select",
+                }
+                .into(),
+            ),
+        );
+        value.insert(
+            key("proxies"),
+            Value::Sequence(
+                member_names
+                    .into_iter()
+                    .map(|name| Value::String(name.to_string()))
+                    .collect(),
+            ),
+        );
+        if matches!(
+            group.group_type.as_str(),
+            "Fallback" | "URL-Test" | "Load-Balance"
+        ) {
+            value.insert(
+                key("url"),
+                Value::String("https://www.gstatic.com/generate_204".into()),
+            );
+            value.insert(key("interval"), Value::Number(300.into()));
+        }
+        if group.group_type == "Load-Balance" {
+            value.insert(key("strategy"), Value::String("round-robin".into()));
+        }
+        if !group.icon.trim().is_empty() {
+            value.insert(key("icon"), Value::String(group.icon.clone()));
+        }
+        groups.push(Value::Mapping(value));
+    }
+
+    Ok(())
+}
+
+fn apply_proxy_group_overrides(groups: &mut [Value], snapshot: &AppSnapshot) -> Result<(), String> {
+    let local_group_names = snapshot
+        .groups
+        .iter()
+        .filter(|group| group.origin == "local")
+        .map(|group| (group.id.as_str(), group.name.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    for group_override in &snapshot.proxy_group_overrides {
+        let Some(target) = groups
+            .iter_mut()
+            .find(|group| item_name(group) == Some(group_override.target_group_name.as_str()))
+        else {
+            continue;
+        };
+        let target_mapping = target.as_mapping_mut().ok_or_else(|| {
+            format!(
+                "托管代理组“{}”配置格式无效",
+                group_override.target_group_name
+            )
+        })?;
+        if !target_mapping.contains_key(key("proxies")) {
+            target_mapping.insert(key("proxies"), Value::Sequence(Vec::new()));
+        }
+        let members = target_mapping
+            .get_mut(key("proxies"))
+            .and_then(Value::as_sequence_mut)
+            .ok_or_else(|| {
+                format!(
+                    "托管代理组“{}”的 proxies 必须是数组",
+                    group_override.target_group_name
+                )
+            })?;
+
+        for group_id in &group_override.added_group_ids {
+            let Some(group_name) = local_group_names.get(group_id.as_str()) else {
+                continue;
+            };
+            if **group_name == group_override.target_group_name {
+                return Err(format!(
+                    "托管代理组“{}”不能通过本地覆写引用自身",
+                    group_override.target_group_name
+                ));
+            }
+            if !members
+                .iter()
+                .any(|member| member.as_str() == Some(group_name))
+            {
+                members.push(Value::String((*group_name).to_string()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_local_rules(rules: &mut Vec<Value>, snapshot: &AppSnapshot) {
+    let mut local_rules = snapshot
+        .rules
+        .iter()
+        .filter(|rule| rule.source == "local" && rule.enabled)
+        .map(|rule| {
+            let mut parts = if rule.rule_type == "MATCH" {
+                vec!["MATCH".to_string(), rule.policy.clone()]
+            } else {
+                vec![
+                    rule.rule_type.clone(),
+                    rule.content.clone(),
+                    rule.policy.clone(),
+                ]
+            };
+            if rule.no_resolve {
+                parts.push("no-resolve".into());
+            }
+            Value::String(parts.join(","))
+        })
+        .collect::<Vec<_>>();
+    merge_rules(&mut local_rules, std::mem::take(rules));
+    *rules = local_rules;
+}
+
+fn apply_rule_overrides(rules: &mut Vec<Value>, snapshot: &AppSnapshot) -> Result<(), String> {
+    for rule_override in &snapshot.rule_overrides {
+        let Some(index) = rules.iter().position(|rule| {
+            rule_signature(rule).is_some_and(|(rule_type, content, _)| {
+                rule_type == rule_override.target_rule_type
+                    && content == rule_override.target_content
+            })
+        }) else {
+            continue;
+        };
+
+        if !rule_override.enabled {
+            rules.remove(index);
+            continue;
+        }
+
+        let raw = rules[index]
+            .as_str()
+            .ok_or_else(|| "本地规则覆写仅支持字符串格式规则".to_string())?;
+        let mut parts = raw
+            .split(',')
+            .map(|part| part.trim().to_string())
+            .collect::<Vec<_>>();
+        let policy_index =
+            if normalized_rule_type(parts.first().map(String::as_str).unwrap_or("")) == "MATCH" {
+                1
+            } else {
+                2
+            };
+        if parts.len() <= policy_index {
+            return Err(format!(
+                "托管规则“{} {}”格式无效",
+                rule_override.target_rule_type, rule_override.target_content
+            ));
+        }
+        parts[policy_index] = rule_override.policy.clone();
+        parts.retain(|part| !part.eq_ignore_ascii_case("no-resolve"));
+        if rule_override.no_resolve {
+            parts.push("no-resolve".into());
+        }
+        rules[index] = Value::String(parts.join(","));
+    }
+
+    Ok(())
+}
+
+fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<(), String> {
+    root.insert(
+        key("find-process-mode"),
+        Value::String(
+            match setting_string(settings, "processMode", "Always")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "always" | "始终" => "always",
+                "off" | "关闭" => "off",
+                _ => "strict",
+            }
+            .into(),
+        ),
+    );
+    let mut tun = root
+        .remove(key("tun"))
+        .map(|value| {
+            value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| "基础配置的 tun 必须是 YAML 对象".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    tun.insert(
+        key("enable"),
+        Value::Bool(setting_bool(settings, "tunMode", false)),
+    );
+    tun.insert(
+        key("stack"),
+        Value::String(map_tun_stack(&setting_string(
+            settings,
+            "networkStack",
+            "Mixed",
+        ))),
+    );
+    tun.insert(key("device"), Value::String("Meta".into()));
+    tun.insert(
+        key("dns-hijack"),
+        Value::Sequence(vec![
+            Value::String("any:53".into()),
+            Value::String("tcp://any:53".into()),
+        ]),
+    );
+    tun.insert(
+        key("auto-route"),
+        Value::Bool(setting_bool(settings, "autoRoute", true)),
+    );
+    tun.insert(
+        key("strict-route"),
+        Value::Bool(setting_bool(settings, "strictRoute", false)),
+    );
+
+    let interface = setting_string(settings, "networkInterface", "系统默认");
+    let auto_detect_interface = interface == "系统默认";
+    tun.insert(
+        key("auto-detect-interface"),
+        Value::Bool(auto_detect_interface),
+    );
+    if auto_detect_interface {
+        root.remove(key("interface-name"));
+    } else {
+        root.insert(key("interface-name"), Value::String(interface));
+    }
+    root.insert(key("tun"), Value::Mapping(tun));
+
+    let mut dns = root
+        .remove(key("dns"))
+        .map(|value| {
+            value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| "基础配置的 dns 必须是 YAML 对象".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    dns.insert(
+        key("enable"),
+        Value::Bool(setting_bool(settings, "dnsEnabled", true)),
+    );
+    dns.insert(
+        key("listen"),
+        Value::String(setting_string(settings, "dnsListen", "0.0.0.0:1053")),
+    );
+    dns.insert(
+        key("ipv6"),
+        Value::Bool(setting_bool(settings, "dnsIpv6", false)),
+    );
+    dns.insert(
+        key("enhanced-mode"),
+        Value::String(map_enhanced_mode(&setting_string(
+            settings,
+            "enhancedMode",
+            "Fake-IP",
+        ))),
+    );
+    dns.insert(
+        key("fake-ip-range"),
+        Value::String(setting_string(settings, "fakeIpRange", "198.18.0.1/16")),
+    );
+    dns.insert(
+        key("use-hosts"),
+        Value::Bool(setting_bool(settings, "useHosts", true)),
+    );
+    dns.insert(
+        key("default-nameserver"),
+        setting_string_sequence(settings, "defaultDns", &["223.5.5.5", "119.29.29.29"]),
+    );
+    dns.insert(
+        key("nameserver"),
+        setting_string_sequence(
+            settings,
+            "proxyDns",
+            &["tls://1.1.1.1", "https://dns.google/dns-query"],
+        ),
+    );
+    dns.insert(
+        key("fallback"),
+        setting_string_sequence(settings, "fallbackDns", &["1.0.0.1", "8.8.8.8"]),
+    );
+    dns.insert(
+        key("fake-ip-filter"),
+        Value::Sequence(
+            setting_string(settings, "fakeIpFilter", "*.lan\nlocalhost\nstun.*.*")
+                .lines()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_string()))
+                .collect(),
+        ),
+    );
+    root.insert(key("dns"), Value::Mapping(dns));
+    Ok(())
+}
+
+fn apply_default_route(rules: &mut Vec<Value>, groups: &[Value], snapshot: &AppSnapshot) {
+    if rules.iter().any(is_terminal_rule) {
+        return;
+    }
+
+    let selected_group_name = snapshot
+        .groups
+        .iter()
+        .find(|group| group.id == snapshot.selected_group_id)
+        .map(|group| group.name.as_str())
+        .filter(|selected| {
+            groups
+                .iter()
+                .filter_map(item_name)
+                .any(|name| name == *selected)
+        });
+    let target = selected_group_name
+        .or_else(|| groups.first().and_then(item_name))
+        .unwrap_or("DIRECT");
+    rules.push(Value::String(format!("MATCH,{target}")));
+}
+
+fn has_custom_base(snapshot: &AppSnapshot) -> bool {
+    snapshot
+        .settings
+        .get("configOverride")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn setting_bool(settings: &SettingsMap, name: &str, fallback: bool) -> bool {
+    settings
+        .get(name)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(fallback)
+}
+
+fn setting_string(settings: &SettingsMap, name: &str, fallback: &str) -> String {
+    settings
+        .get(name)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn setting_string_sequence(settings: &SettingsMap, name: &str, fallback: &[&str]) -> Value {
+    let values = settings
+        .get(name)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(|value| Value::String(value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| {
+            fallback
+                .iter()
+                .map(|value| Value::String((*value).to_string()))
+                .collect()
+        });
+    Value::Sequence(values)
+}
+
+fn map_tun_stack(value: &str) -> String {
+    match value.to_ascii_lowercase().as_str() {
+        "system" => "system",
+        "gvisor" => "gvisor",
+        _ => "mixed",
+    }
+    .into()
+}
+
+fn map_enhanced_mode(value: &str) -> String {
+    if value.eq_ignore_ascii_case("Redir-Host") {
+        "redir-host"
+    } else {
+        "fake-ip"
+    }
+    .into()
+}
+
+pub(crate) fn enrich_runtime_nodes(
+    app: &AppHandle,
+    mut snapshot: AppSnapshot,
+) -> Result<AppSnapshot, String> {
+    let config_path = core::core_dir(app)?.join(ACTIVE_CONFIG_NAME);
+    if !config_path.is_file() {
+        return Ok(snapshot);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|error| format!("读取生效配置中的节点详情失败：{error}"))?;
+    enrich_nodes_from_config(&mut snapshot.nodes, &content)?;
+    Ok(snapshot)
+}
+
+fn enrich_nodes_from_config(nodes: &mut [ProxyNode], content: &str) -> Result<(), String> {
+    let root = serde_yaml::from_str::<Value>(content)
+        .map_err(|error| format!("生效配置不是有效 YAML：{error}"))?;
+    let configured_nodes = root
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("proxies")))
+        .and_then(Value::as_sequence)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let configured_by_name = configured_nodes
+        .iter()
+        .filter_map(|value| item_name(value).map(|name| (name, value)))
+        .collect::<HashMap<_, _>>();
+
+    for node in nodes {
+        let Some(configured) = configured_by_name.get(node.name.as_str()) else {
+            continue;
+        };
+        let Some(mapping) = configured.as_mapping() else {
+            continue;
+        };
+
+        if let Some(address) = mapping.get(key("server")).and_then(yaml_scalar_string) {
+            node.address = address;
+        }
+        if let Some(port) = mapping.get(key("port")).and_then(yaml_u16) {
+            node.port = port;
+        }
+        if let Some(cipher) = mapping.get(key("cipher")).and_then(yaml_scalar_string) {
+            node.cipher = Some(cipher);
+        }
+        if let Some(dialer_proxy) = mapping
+            .get(key("dialer-proxy"))
+            .and_then(yaml_scalar_string)
+        {
+            node.dialer_proxy = Some(dialer_proxy);
+        }
+    }
+
+    Ok(())
+}
+
+fn yaml_scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn yaml_u16(value: &Value) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .or_else(|| value.as_str().and_then(|value| value.parse::<u16>().ok()))
 }
 
 fn merge_parsed_subscription(
@@ -387,12 +1032,16 @@ fn merge_parsed_subscription(
     proxies: &mut Vec<Value>,
     groups: &mut Vec<Value>,
     providers: &mut Mapping,
+    rules: &mut Vec<Value>,
+    rule_providers: &mut Mapping,
 ) -> Result<(), String> {
     match parsed {
         ParsedSubscription::ClashConfig {
             proxies: incoming_proxies,
             groups: incoming_groups,
             providers: incoming_providers,
+            rules: incoming_rules,
+            rule_providers: incoming_rule_providers,
         } => {
             let node_names = named_values(&incoming_proxies, "代理节点")?;
             let provider_names = incoming_providers
@@ -412,6 +1061,13 @@ fn merge_parsed_subscription(
                 subscription.allow_override,
                 "代理 Provider",
             )?;
+            merge_mapping(
+                rule_providers,
+                incoming_rule_providers,
+                subscription.allow_override,
+                "规则 Provider",
+            )?;
+            merge_rules(rules, incoming_rules);
             if incoming_groups.is_empty() {
                 if !node_names.is_empty() || !provider_names.is_empty() {
                     merge_named_sequence(
@@ -485,11 +1141,28 @@ fn parse_subscription(content: &str) -> Result<ParsedSubscription, String> {
             .and_then(Value::as_mapping)
             .cloned()
             .unwrap_or_default();
-        if !proxies.is_empty() || !groups.is_empty() || !providers.is_empty() {
+        let rules = mapping
+            .get(key("rules"))
+            .and_then(Value::as_sequence)
+            .cloned()
+            .unwrap_or_default();
+        let rule_providers = mapping
+            .get(key("rule-providers"))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        if !proxies.is_empty()
+            || !groups.is_empty()
+            || !providers.is_empty()
+            || !rules.is_empty()
+            || !rule_providers.is_empty()
+        {
             return Ok(ParsedSubscription::ClashConfig {
                 proxies,
                 groups,
                 providers,
+                rules,
+                rule_providers,
             });
         }
     }
@@ -641,6 +1314,32 @@ fn merge_mapping(
         target.insert(name, value);
     }
     Ok(())
+}
+
+fn merge_rules(target: &mut Vec<Value>, incoming: Vec<Value>) {
+    let mut merged = Vec::with_capacity(target.len() + incoming.len());
+    let mut terminal_rule = None;
+
+    for rule in target.drain(..).chain(incoming) {
+        if is_terminal_rule(&rule) {
+            if terminal_rule.is_none() {
+                terminal_rule = Some(rule);
+            }
+        } else {
+            merged.push(rule);
+        }
+    }
+
+    if let Some(rule) = terminal_rule {
+        merged.push(rule);
+    }
+    *target = merged;
+}
+
+fn is_terminal_rule(rule: &Value) -> bool {
+    rule.as_str()
+        .and_then(|rule| rule.split(',').next())
+        .is_some_and(|rule_type| rule_type.trim().eq_ignore_ascii_case("MATCH"))
 }
 
 fn generated_group(name: &str, proxies: &[String], providers: &[String]) -> Value {
@@ -807,6 +1506,139 @@ fn is_runtime_provider(subscription: &Subscription) -> bool {
     subscription.is_runtime_provider_record()
 }
 
+fn prune_removed_subscription_data(
+    snapshot: &mut AppSnapshot,
+    subscription: &Subscription,
+    content: Option<&str>,
+) {
+    let mut node_names = HashSet::new();
+    let mut group_names = HashSet::new();
+    let mut rule_signatures = HashSet::new();
+    let managed_provider = provider_name(&subscription.id);
+
+    if let Some(content) = content {
+        match parse_subscription(content) {
+            Ok(ParsedSubscription::ClashConfig {
+                proxies,
+                groups,
+                providers,
+                rules,
+                ..
+            }) => {
+                node_names.extend(
+                    proxies
+                        .iter()
+                        .filter_map(item_name)
+                        .map(ToString::to_string),
+                );
+                group_names.extend(groups.iter().filter_map(item_name).map(ToString::to_string));
+                if group_names.is_empty() && (!node_names.is_empty() || !providers.is_empty()) {
+                    group_names.insert(subscription.name.clone());
+                }
+                rule_signatures.extend(rules.iter().filter_map(rule_signature));
+            }
+            Ok(ParsedSubscription::ProviderContent) | Err(_) => {
+                group_names.insert(subscription.name.clone());
+            }
+        }
+    } else {
+        group_names.insert(subscription.name.clone());
+    }
+
+    snapshot.nodes.retain(|node| {
+        node.origin != "managed"
+            || (!node_names.contains(&node.name)
+                && node.group.as_deref() != Some(managed_provider.as_str()))
+    });
+    let retained_node_ids = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    snapshot
+        .groups
+        .retain(|group| group.origin != "managed" || !group_names.contains(&group.name));
+    let retained_group_ids = snapshot
+        .groups
+        .iter()
+        .map(|group| group.id.clone())
+        .collect::<HashSet<_>>();
+    for group in &mut snapshot.groups {
+        group.node_ids.retain(|id| retained_node_ids.contains(id));
+        group.group_ids.retain(|id| retained_group_ids.contains(id));
+        if group
+            .current_node_id
+            .as_ref()
+            .is_some_and(|id| !retained_node_ids.contains(id) && !retained_group_ids.contains(id))
+        {
+            group.current_node_id = group
+                .node_ids
+                .first()
+                .cloned()
+                .or_else(|| group.group_ids.first().cloned());
+        }
+    }
+    snapshot.rules.retain(|rule| {
+        rule.source != "managed"
+            || !rule_signatures.contains(&(
+                rule.rule_type.clone(),
+                rule.content.clone(),
+                rule.policy.clone(),
+            ))
+    });
+
+    if !snapshot
+        .groups
+        .iter()
+        .any(|group| group.id == snapshot.selected_group_id)
+    {
+        snapshot.selected_group_id = snapshot
+            .groups
+            .first()
+            .map(|group| group.id.clone())
+            .unwrap_or_default();
+    }
+    if !snapshot
+        .nodes
+        .iter()
+        .any(|node| node.id == snapshot.selected_node_id)
+    {
+        snapshot.selected_node_id = snapshot
+            .nodes
+            .first()
+            .map(|node| node.id.clone())
+            .unwrap_or_default();
+    }
+}
+
+fn rule_signature(rule: &Value) -> Option<(String, String, String)> {
+    let values = rule.as_str()?.split(',').map(str::trim).collect::<Vec<_>>();
+    let rule_type = normalized_rule_type(values.first()?);
+    if rule_type == "MATCH" {
+        return Some((
+            rule_type.clone(),
+            rule_type,
+            values.get(1).unwrap_or(&"DIRECT").to_string(),
+        ));
+    }
+    Some((
+        rule_type,
+        values.get(1)?.to_string(),
+        values.get(2)?.to_string(),
+    ))
+}
+
+fn normalized_rule_type(value: &str) -> String {
+    match value.to_ascii_uppercase().replace('_', "-").as_str() {
+        "DOMAINSUFFIX" | "DOMAIN-SUFFIX" => "DOMAIN-SUFFIX",
+        "DOMAINKEYWORD" | "DOMAIN-KEYWORD" => "DOMAIN-KEYWORD",
+        "IPCIDR" | "IP-CIDR" | "IP-CIDR6" => "IP-CIDR",
+        "RULESET" | "RULE-SET" => "RULE-SET",
+        value => value,
+    }
+    .into()
+}
+
 fn count_share_links(content: &str) -> usize {
     content
         .lines()
@@ -903,6 +1735,85 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    fn proxy_group(
+        id: &str,
+        name: &str,
+        origin: &str,
+        group_ids: Vec<String>,
+    ) -> crate::models::ProxyGroup {
+        crate::models::ProxyGroup {
+            id: id.into(),
+            name: name.into(),
+            group_type: "Selector".into(),
+            origin: origin.into(),
+            icon: String::new(),
+            description: String::new(),
+            node_ids: Vec::new(),
+            group_ids,
+            current_node_id: None,
+            auto_test: false,
+            allow_manual: true,
+        }
+    }
+
+    fn group_with_members(name: &str, members: &[&str]) -> Value {
+        let mut group = Mapping::new();
+        group.insert(key("name"), Value::String(name.into()));
+        group.insert(key("type"), Value::String("select".into()));
+        group.insert(
+            key("proxies"),
+            Value::Sequence(
+                members
+                    .iter()
+                    .map(|member| Value::String((*member).into()))
+                    .collect(),
+            ),
+        );
+        Value::Mapping(group)
+    }
+
+    #[test]
+    fn reapplies_local_group_override_after_subscription_groups_change() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.groups.extend([
+            proxy_group("base", "节点选择", "managed", Vec::new()),
+            proxy_group("ai", "AI", "managed", Vec::new()),
+            proxy_group("local", "手动前置", "local", vec!["base".into()]),
+        ]);
+        snapshot
+            .proxy_group_overrides
+            .push(crate::models::ProxyGroupMemberOverride {
+                target_group_id: "ai".into(),
+                target_group_name: "AI".into(),
+                added_group_ids: vec!["local".into()],
+            });
+
+        for subscription_members in [vec!["节点选择"], vec!["自动选择"]] {
+            let mut groups = vec![
+                group_with_members("AI", &subscription_members),
+                group_with_members("节点选择", &["DIRECT"]),
+                group_with_members("自动选择", &["DIRECT"]),
+            ];
+
+            apply_local_proxy_groups(&mut groups, &snapshot).expect("应写入本地代理组");
+            apply_proxy_group_overrides(&mut groups, &snapshot).expect("应重新叠加本地覆写");
+
+            let ai_members = groups
+                .iter()
+                .find(|group| item_name(group) == Some("AI"))
+                .and_then(Value::as_mapping)
+                .and_then(|group| group.get(key("proxies")))
+                .and_then(Value::as_sequence)
+                .expect("AI 应包含成员");
+            assert!(ai_members
+                .iter()
+                .any(|member| member.as_str() == Some("手动前置")));
+            assert!(groups
+                .iter()
+                .any(|group| item_name(group) == Some("手动前置")));
+        }
+    }
+
     fn named_item(name: &str) -> Value {
         let mut mapping = Mapping::new();
         mapping.insert(key("name"), Value::String(name.into()));
@@ -944,6 +1855,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_rules_only_clash_yaml() {
+        let yaml = "rule-providers:\n  reject:\n    type: http\n    url: https://example.com/reject.yaml\nrules:\n  - RULE-SET,reject,REJECT\n  - MATCH,DIRECT\n";
+        let parsed = parse_subscription(yaml).expect("应解析仅包含规则的 Clash 配置");
+
+        match parsed {
+            ParsedSubscription::ClashConfig {
+                rules,
+                rule_providers,
+                ..
+            } => {
+                assert_eq!(rules.len(), 2);
+                assert!(rule_providers.contains_key(key("reject")));
+            }
+            ParsedSubscription::ProviderContent => panic!("不应解析为节点 Provider"),
+        }
+    }
+
+    #[test]
     fn parses_base64_uri_subscription() {
         let encoded = general_purpose::STANDARD.encode("ss://example\nvmess://example");
         assert!(matches!(
@@ -977,12 +1906,16 @@ mod tests {
         let mut proxies = Vec::new();
         let mut groups = Vec::new();
         let mut providers = Mapping::new();
+        let mut rules = Vec::new();
+        let mut rule_providers = Mapping::new();
         merge_parsed_subscription(
             &subscription(false),
             parsed,
             &mut proxies,
             &mut groups,
             &mut providers,
+            &mut rules,
+            &mut rule_providers,
         )
         .expect("应合并节点与代理组");
         assert_eq!(
@@ -994,6 +1927,77 @@ mod tests {
             ["自动选择"]
         );
         assert!(providers.is_empty());
+        assert!(rules.is_empty());
+        assert!(rule_providers.is_empty());
+    }
+
+    #[test]
+    fn merges_subscription_rules_and_rule_providers() {
+        let parsed = parse_subscription(
+            "rule-providers:\n  reject:\n    type: http\n    url: https://example.com/reject.yaml\nrules:\n  - RULE-SET,reject,REJECT\n  - MATCH,DIRECT\n",
+        )
+        .expect("应解析订阅规则");
+        let mut proxies = Vec::new();
+        let mut groups = Vec::new();
+        let mut providers = Mapping::new();
+        let mut rules = Vec::new();
+        let mut rule_providers = Mapping::new();
+
+        merge_parsed_subscription(
+            &subscription(false),
+            parsed,
+            &mut proxies,
+            &mut groups,
+            &mut providers,
+            &mut rules,
+            &mut rule_providers,
+        )
+        .expect("应合并订阅规则");
+
+        assert!(rule_providers.contains_key(key("reject")));
+        assert_eq!(rules[0].as_str(), Some("RULE-SET,reject,REJECT"));
+        assert_eq!(rules[1].as_str(), Some("MATCH,DIRECT"));
+    }
+
+    #[test]
+    fn keeps_single_match_rule_at_the_end() {
+        let mut rules = vec![Value::String("DOMAIN,first.example,DIRECT".into())];
+        merge_rules(
+            &mut rules,
+            vec![
+                Value::String("MATCH,代理".into()),
+                Value::String("DOMAIN,second.example,REJECT".into()),
+            ],
+        );
+        merge_rules(
+            &mut rules,
+            vec![
+                Value::String("DOMAIN,third.example,DIRECT".into()),
+                Value::String("MATCH,DIRECT".into()),
+            ],
+        );
+
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules.last().and_then(Value::as_str), Some("MATCH,代理"));
+        assert_eq!(
+            rules.iter().filter(|rule| is_terminal_rule(rule)).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn keeps_imported_rules_instead_of_applying_default_route() {
+        let mut rules = vec![
+            Value::String("DOMAIN-SUFFIX,example.com,REJECT".into()),
+            Value::String("MATCH,DIRECT".into()),
+        ];
+        let snapshot = crate::defaults::default_snapshot();
+
+        apply_default_route(&mut rules, &[named_item("自动选择")], &snapshot);
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].as_str(), Some("DOMAIN-SUFFIX,example.com,REJECT"));
+        assert_eq!(rules[1].as_str(), Some("MATCH,DIRECT"));
     }
 
     #[test]
@@ -1001,12 +2005,16 @@ mod tests {
         let mut proxies = Vec::new();
         let mut groups = Vec::new();
         let mut providers = Mapping::new();
+        let mut rules = Vec::new();
+        let mut rule_providers = Mapping::new();
         merge_parsed_subscription(
             &subscription(false),
             ParsedSubscription::ProviderContent,
             &mut proxies,
             &mut groups,
             &mut providers,
+            &mut rules,
+            &mut rule_providers,
         )
         .expect("应生成 Provider 配置");
         assert!(proxies.is_empty());
@@ -1015,6 +2023,166 @@ mod tests {
             named_values(&groups, "代理组").expect("应读取组名"),
             ["测试订阅"]
         );
+    }
+
+    #[test]
+    fn applies_tun_dns_and_proxy_route_from_settings() {
+        let mut settings = crate::defaults::default_settings();
+        settings.insert("tunMode".into(), serde_json::json!(true));
+        settings.insert("networkStack".into(), serde_json::json!("gVisor"));
+        settings.insert("strictRoute".into(), serde_json::json!(true));
+        let mut root = Mapping::new();
+
+        apply_runtime_settings(&mut root, &settings).expect("应生成 TUN 与 DNS 配置");
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.settings = settings;
+        let mut rules = Vec::new();
+        apply_default_route(&mut rules, &[named_item("自动选择")], &snapshot);
+
+        let tun = root
+            .get(key("tun"))
+            .and_then(Value::as_mapping)
+            .expect("应包含 TUN 配置");
+        assert_eq!(tun.get(key("enable")).and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            tun.get(key("stack")).and_then(Value::as_str),
+            Some("gvisor")
+        );
+        assert_eq!(tun.get(key("device")).and_then(Value::as_str), Some("Meta"));
+        assert_eq!(
+            tun.get(key("strict-route")).and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(root
+            .get(key("dns"))
+            .and_then(Value::as_mapping)
+            .and_then(|dns| dns.get(key("enable")))
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+        assert_eq!(
+            rules.first().and_then(Value::as_str),
+            Some("MATCH,自动选择")
+        );
+    }
+
+    #[test]
+    fn enriches_runtime_node_endpoint_without_copying_credentials() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.nodes.push(ProxyNode {
+            id: "node-tr".into(),
+            name: "土耳其A[GCPxAWS]".into(),
+            country: None,
+            flag: None,
+            protocol: "Vless".into(),
+            address: String::new(),
+            port: 0,
+            latency: 389,
+            password: None,
+            cipher: None,
+            dialer_proxy: None,
+            group: None,
+            origin: "managed".into(),
+            available: true,
+        });
+        let config = "proxies:\n  - name: 土耳其A[GCPxAWS]\n    type: vless\n    server: tr.example.com\n    port: '53355'\n    uuid: private-value\n    cipher: auto\n";
+
+        enrich_nodes_from_config(&mut snapshot.nodes, config).expect("应回填节点详情");
+
+        let node = &snapshot.nodes[0];
+        assert_eq!(node.address, "tr.example.com");
+        assert_eq!(node.port, 53355);
+        assert_eq!(node.cipher.as_deref(), Some("auto"));
+        assert!(node.password.is_none());
+        assert_eq!(node.latency, 389);
+    }
+
+    #[test]
+    fn prunes_only_data_owned_by_deleted_subscription() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        for (id, name) in [("node-hk", "HK"), ("node-us", "US")] {
+            snapshot.nodes.push(ProxyNode {
+                id: id.into(),
+                name: name.into(),
+                country: None,
+                flag: None,
+                protocol: "SS".into(),
+                address: String::new(),
+                port: 0,
+                latency: 0,
+                password: None,
+                cipher: None,
+                dialer_proxy: None,
+                group: None,
+                origin: "managed".into(),
+                available: true,
+            });
+        }
+        snapshot.groups.extend([
+            crate::models::ProxyGroup {
+                id: "group-removed".into(),
+                name: "自动选择".into(),
+                group_type: "Selector".into(),
+                origin: "managed".into(),
+                icon: String::new(),
+                description: String::new(),
+                node_ids: vec!["node-hk".into()],
+                group_ids: Vec::new(),
+                current_node_id: Some("node-hk".into()),
+                auto_test: false,
+                allow_manual: true,
+            },
+            crate::models::ProxyGroup {
+                id: "group-kept".into(),
+                name: "保留分组".into(),
+                group_type: "Selector".into(),
+                origin: "managed".into(),
+                icon: String::new(),
+                description: String::new(),
+                node_ids: vec!["node-us".into()],
+                group_ids: Vec::new(),
+                current_node_id: Some("node-us".into()),
+                auto_test: false,
+                allow_manual: true,
+            },
+        ]);
+        snapshot.rules.extend([
+            crate::models::RoutingRule {
+                id: "rule-removed".into(),
+                rule_type: "DOMAIN-SUFFIX".into(),
+                content: "example.com".into(),
+                policy: "REJECT".into(),
+                source: "managed".into(),
+                enabled: true,
+                no_resolve: false,
+                wildcard: false,
+                note: None,
+            },
+            crate::models::RoutingRule {
+                id: "rule-kept".into(),
+                rule_type: "DOMAIN".into(),
+                content: "keep.example".into(),
+                policy: "DIRECT".into(),
+                source: "managed".into(),
+                enabled: true,
+                no_resolve: false,
+                wildcard: false,
+                note: None,
+            },
+        ]);
+        snapshot.selected_node_id = "node-hk".into();
+        snapshot.selected_group_id = "group-removed".into();
+        let content = "proxies:\n  - name: HK\n    type: ss\nproxy-groups:\n  - name: 自动选择\n    type: select\n    proxies: [HK]\nrules:\n  - DOMAIN-SUFFIX,example.com,REJECT\n";
+
+        prune_removed_subscription_data(&mut snapshot, &subscription(false), Some(content));
+
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].name, "US");
+        assert_eq!(snapshot.groups.len(), 1);
+        assert_eq!(snapshot.groups[0].name, "保留分组");
+        assert_eq!(snapshot.rules.len(), 1);
+        assert_eq!(snapshot.rules[0].content, "keep.example");
+        assert_eq!(snapshot.selected_node_id, "node-us");
+        assert_eq!(snapshot.selected_group_id, "group-kept");
     }
 
     #[test]

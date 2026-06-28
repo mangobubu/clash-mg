@@ -31,9 +31,16 @@ export interface ProxyGroup {
   icon: string;
   description: string;
   nodeIds: string[];
+  groupIds: string[];
   currentNodeId?: string;
   autoTest: boolean;
   allowManual: boolean;
+}
+
+export interface ProxyGroupMemberOverride {
+  targetGroupId: string;
+  targetGroupName: string;
+  addedGroupIds: string[];
 }
 
 export type SubscriptionType = "HTTP" | "文件导入" | "本地链接";
@@ -72,6 +79,15 @@ export interface RoutingRule {
   note?: string;
 }
 
+export interface RoutingRuleOverride {
+  targetType: RuleType;
+  targetContent: string;
+  policy: string;
+  enabled: boolean;
+  noResolve: boolean;
+  note?: string;
+}
+
 export interface Connection {
   id: string;
   app: string;
@@ -85,6 +101,8 @@ export interface Connection {
   duration: string;
   rule: string;
   policy: string;
+  node: string;
+  chain: string[];
   status: "活跃" | "已关闭";
 }
 
@@ -130,6 +148,8 @@ export interface RuntimeInfo {
   uploadTotal: string;
   downloadTotal: string;
   lastSync: string;
+  tunEnabled: boolean;
+  processMode: string;
   error?: string;
 }
 
@@ -171,8 +191,10 @@ export interface AppData {
   selectedGroupId: string;
   nodes: ProxyNode[];
   groups: ProxyGroup[];
+  proxyGroupOverrides: ProxyGroupMemberOverride[];
   subscriptions: Subscription[];
   rules: RoutingRule[];
+  ruleOverrides: RoutingRuleOverride[];
   connections: Connection[];
   logs: LogEntry[];
   activities: Activity[];
@@ -210,7 +232,7 @@ export interface AppState extends AppData {
   setAccent: (color: string) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setConnected: (connected: boolean) => void;
-  selectNode: (nodeId: string, groupId?: string) => void;
+  selectProxy: (proxyId: string, groupId?: string) => void;
   selectGroup: (groupId: string) => void;
   addNode: (node: ProxyNode) => void;
   updateNode: (node: ProxyNode) => void;
@@ -218,13 +240,16 @@ export interface AppState extends AppData {
   testNodeLatency: (nodeId: string) => Promise<DelayResult>;
   addGroup: (group: ProxyGroup) => void;
   updateGroup: (group: ProxyGroup) => void;
+  setProxyGroupOverride: (targetGroup: ProxyGroup, addedGroupIds: string[]) => void;
   refreshLatencies: () => void;
   addSubscription: (subscription: Subscription) => void;
   updateSubscription: (subscription: Subscription) => void;
-  deleteSubscription: (id: string) => void;
+  deleteSubscription: (id: string) => Promise<void>;
   refreshSubscriptions: (ids?: string[]) => Promise<SubscriptionRefreshResult>;
   addRule: (rule: RoutingRule) => void;
   updateRule: (rule: RoutingRule) => void;
+  setRuleOverride: (targetRule: RoutingRule, overrideRule: RoutingRule) => void;
+  clearRuleOverride: (targetRule: RoutingRule) => void;
   deleteRule: (id: string) => void;
   reorderRule: (fromId: string, toId: string) => void;
   closeConnections: (ids: string[]) => void;

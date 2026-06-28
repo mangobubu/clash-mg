@@ -108,3 +108,10 @@ function loadBrowserSnapshot() {
     return fallback;
   }
 }
+
+export async function getLanIp(): Promise<string> {
+  if (await isTauriRuntime()) {
+    return invoke<string>("get_lan_ip");
+  }
+  return "127.0.0.1";
+}

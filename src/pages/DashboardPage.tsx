@@ -125,7 +125,7 @@ export function DashboardPage() {
                   </div>
                 </div>
                 <div className="quick-toggles">
-                  <QuickToggle icon={<WifiOutlined />} tone="green" label="TUN 模式" value={Boolean(settings.tunMode)} onChange={() => toggleSetting("tunMode")} control={<TunServiceControl compact checked={Boolean(settings.tunMode)} onChange={(checked) => updateSetting("tunMode", checked)} />} />
+                  <QuickToggle icon={<WifiOutlined />} tone="green" label="TUN 模式" value={Boolean(settings.tunMode)} onChange={() => toggleSetting("tunMode")} control={<TunServiceControl compact checked={Boolean(settings.tunMode)} />} />
                   <QuickToggle icon={<DashboardOutlined />} tone="cyan" label="系统代理" value={Boolean(settings.systemProxy)} onChange={() => toggleSetting("systemProxy")} />
                 </div>
               </div>

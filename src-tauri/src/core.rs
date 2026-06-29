@@ -998,7 +998,7 @@ fn decode_windows_command_output(bytes: &[u8]) -> String {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn quote_windows_argument(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }

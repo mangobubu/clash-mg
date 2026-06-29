@@ -291,6 +291,7 @@ export interface AppState extends AppData {
   clearClosedConnections: () => void;
   clearLogs: () => void;
   updateSetting: (key: string, value: SettingValue) => void;
+  applyTunMode: (enabled: boolean) => Promise<void>;
   resetSettings: () => void;
   addOverride: (scope: "domain" | "request" | "response", item: OverrideItem) => void;
   updateOverride: (scope: "domain" | "request" | "response", item: OverrideItem) => void;

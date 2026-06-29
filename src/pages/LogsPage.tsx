@@ -29,12 +29,13 @@ export function LogsPage() {
   const [paused, setPaused] = useState(false);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const { logs, clearLogs, refreshRuntimeData } = useAppStore();
+  const visibleLogs = useMemo(() => logs.filter((entry) => entry.source !== "测速"), [logs]);
 
-  const filtered = useMemo(() => logs.filter((entry) =>
+  const filtered = useMemo(() => visibleLogs.filter((entry) =>
     `${entry.content}${entry.source}`.toLowerCase().includes(search.toLowerCase())
     && (level === "all" || entry.level === level)
     && (source === "all" || entry.source === source)
-    && (showDebug || entry.level !== "DEBUG")), [level, logs, search, showDebug, source]);
+    && (showDebug || entry.level !== "DEBUG")), [level, search, showDebug, source, visibleLogs]);
 
   const copyLog = async (entry: LogEntry) => {
     const content = `[${entry.time}] [${entry.level}] [${entry.source}] ${entry.content}`;
@@ -43,7 +44,7 @@ export function LogsPage() {
   };
 
   const exportLogs = () => {
-    const content = logs.map((entry) => `[${entry.time}] [${entry.level}] [${entry.source}] ${entry.content}`).join("\n");
+    const content = visibleLogs.map((entry) => `[${entry.time}] [${entry.level}] [${entry.source}] ${entry.content}`).join("\n");
     const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -68,7 +69,7 @@ export function LogsPage() {
         <div className="filter-bar logs-filter-bar">
           <Input prefix={<SearchOutlined />} placeholder="搜索日志内容 / 进程 / 模块" value={search} onChange={(event) => setSearch(event.target.value)} allowClear />
           <Select value={level} onChange={setLevel} options={[{ label: "全部级别", value: "all" }, ...Object.keys(logColor).map((value) => ({ label: value, value }))]} />
-          <Select value={source} onChange={setSource} options={[{ label: "全部来源", value: "all" }, ...Array.from(new Set(logs.map((entry) => entry.source))).map((value) => ({ label: value, value }))]} />
+          <Select value={source} onChange={setSource} options={[{ label: "全部来源", value: "all" }, ...Array.from(new Set(visibleLogs.map((entry) => entry.source))).map((value) => ({ label: value, value }))]} />
           <Flex align="center" gap={8} className="filter-switch"><Text>自动滚动</Text><Switch checked={autoScroll} onChange={setAutoScroll} /></Flex>
           <Flex align="center" gap={8} className="filter-switch"><Text>显示调试</Text><Switch checked={showDebug} onChange={setShowDebug} /></Flex>
           <Button icon={<ReloadOutlined />} onClick={() => { void refreshRuntimeData(); message.success("已请求刷新运行日志"); }} aria-label="刷新日志" />

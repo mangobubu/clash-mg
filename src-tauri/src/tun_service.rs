@@ -22,6 +22,7 @@ use crate::{core, core_log, models::SettingsMap};
 
 #[cfg(windows)]
 const SERVICE_NAME: &str = "ClashMgTunService";
+#[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.clashmg.tun-service";
 const SERVICE_PORT: u16 = 47892;
 const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.6");

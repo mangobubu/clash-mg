@@ -141,7 +141,7 @@ export function SettingsPage() {
 
 function SettingFieldControl({ field, value, onChange, themeMode, setThemeMode }: { field: SettingField; value: SettingValue | undefined; onChange: (value: SettingValue) => void; themeMode: ThemeMode; setThemeMode: (mode: ThemeMode) => void }) {
   let control: React.ReactNode;
-  if (field.key === "tunMode") control = <TunServiceControl checked={Boolean(value)} onChange={onChange} />;
+  if (field.key === "tunMode") control = <TunServiceControl checked={Boolean(value)} />;
   else if (field.control === "switch") control = <Switch checked={Boolean(value)} onChange={onChange} />;
   else if (field.control === "select") control = <Select value={String(value ?? "")} onChange={onChange} options={field.options?.map((option) => ({ label: option, value: option }))} />;
   else if (field.control === "number") control = <InputNumber value={Number(value ?? 0)} min={field.min} max={field.max} onChange={(next) => onChange(next ?? 0)} />;

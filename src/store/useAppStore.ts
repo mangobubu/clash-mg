@@ -298,7 +298,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
       result = { latency: 0, available: false, message: String(error) };
     }
     get().updateNodeLatency(nodeId, result.latency, result.available);
-    if (result.message) appendLog("WARNING", "测速", `${node.name} 测速失败：${result.message}`);
     return result;
   },
   testAutoProxyGroups: async () => {
@@ -306,23 +305,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const nodeIds = [...new Set(automaticGroups.flatMap((group) => group.nodeIds))];
     if (!automaticGroups.length || !nodeIds.length) return;
 
-    appendLog("INFO", "测速", `开始自动测试 ${automaticGroups.length} 个代理组中的 ${nodeIds.length} 个节点`);
     await Promise.all(nodeIds.map((nodeId) => get().testNodeLatency(nodeId)));
 
-    let selectedCount = 0;
     for (const group of automaticGroups) {
       const currentNodes = get().nodes.filter((node) => group.nodeIds.includes(node.id));
       const bestNode = findLowestLatencyProxyNode(currentNodes);
-      if (!bestNode) {
-        appendLog("WARNING", "测速", `代理组“${group.name}”没有可用的测速结果，已保持当前节点`);
-        continue;
-      }
+      if (!bestNode) continue;
 
       await get().selectProxy(bestNode.id, group.id);
-      selectedCount += 1;
     }
-
-    appendLog("SUCCESS", "测速", `自动测速完成，已为 ${selectedCount} 个代理组使用最低延迟节点`);
   },
   addGroup: (group) => {
     set((state) => ({ groups: [...state.groups, group] }));
@@ -531,6 +522,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
       ...(key === "navCollapsed" ? { sidebarCollapsed: Boolean(value) } : {}),
     }));
     queuePersist();
+  },
+  applyTunMode: async (enabled) => {
+    const current = get();
+    const previousEnabled = Boolean(current.settings.tunMode);
+    if (previousEnabled === enabled) return;
+
+    window.clearTimeout(persistTimer);
+    persistTimer = undefined;
+    const nextSettings = { ...current.settings, tunMode: enabled };
+    const nextSnapshot = toAppData({ ...current, settings: nextSettings });
+
+    try {
+      await saveAppSnapshot(nextSnapshot);
+      set((state) => ({
+        settings: { ...state.settings, tunMode: enabled },
+        runtime: { ...state.runtime, tunEnabled: enabled },
+      }));
+      appendLog("SUCCESS", "TUN", `TUN 模式已${enabled ? "开启" : "关闭"}`);
+    } catch (error) {
+      appendLog("ERROR", "TUN", `TUN ${enabled ? "开启" : "关闭"}失败：${String(error)}`);
+      throw error;
+    }
   },
   resetSettings: () => {
     set({ settings: { ...defaultSettings }, themeMode: "light", accent: "#12b8c4", sidebarCollapsed: false });

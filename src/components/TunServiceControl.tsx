@@ -20,13 +20,19 @@ export function isTunServiceAvailable(status: TunServiceStatus) {
   return status.installed && status.versionCompatible && !status.message;
 }
 
+export function isTunSwitchLoading(checking: boolean, switching: boolean) {
+  return checking || switching;
+}
+
 interface TunServiceContextValue {
   status: TunServiceStatus;
   checking: boolean;
   busy: boolean;
+  switching: boolean;
   refresh: () => Promise<void>;
   install: () => Promise<void>;
   uninstall: () => Promise<void>;
+  toggleTun: (enabled: boolean) => Promise<void>;
 }
 
 const TunServiceContext = createContext<TunServiceContextValue | null>(null);
@@ -36,9 +42,11 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
   const backendAvailable = useAppStore((state) => state.backendAvailable);
   const tunEnabled = useAppStore((state) => Boolean(state.settings.tunMode));
   const updateSetting = useAppStore((state) => state.updateSetting);
+  const applyTunMode = useAppStore((state) => state.applyTunMode);
   const [status, setStatus] = useState<TunServiceStatus>(unavailableStatus);
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [switching, setSwitching] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!backendAvailable) {
@@ -94,9 +102,25 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
     }
   }, [refresh]);
 
+  const toggleTun = useCallback(async (enabled: boolean) => {
+    if (switching) return;
+    setSwitching(true);
+    try {
+      await applyTunMode(enabled);
+      message.success(`TUN 模式已${enabled ? "开启" : "关闭"}`);
+    } catch (error) {
+      message.error({
+        content: `TUN ${enabled ? "开启" : "关闭"}失败：${String(error)}`,
+        duration: 8,
+      });
+    } finally {
+      setSwitching(false);
+    }
+  }, [applyTunMode, switching]);
+
   const value = useMemo(
-    () => ({ status, checking, busy, refresh, install, uninstall }),
-    [busy, checking, install, refresh, status, uninstall],
+    () => ({ status, checking, busy, switching, refresh, install, uninstall, toggleTun }),
+    [busy, checking, install, refresh, status, switching, toggleTun, uninstall],
   );
 
   return <TunServiceContext.Provider value={value}>{children}</TunServiceContext.Provider>;
@@ -110,14 +134,12 @@ export function useTunService() {
 
 export function TunServiceControl({
   checked,
-  onChange,
   compact = false,
 }: {
   checked: boolean;
-  onChange: (checked: boolean) => void;
   compact?: boolean;
 }) {
-  const { status, checking, busy, install, uninstall } = useTunService();
+  const { status, checking, busy, switching, install, uninstall, toggleTun } = useTunService();
   const available = isTunServiceAvailable(status);
   const serviceActionLabel = status.installed ? "删除 TUN 系统服务" : "安装 TUN 系统服务";
 
@@ -158,15 +180,15 @@ export function TunServiceControl({
     <div className={`tun-service-control${compact ? " compact" : ""}`}>
       <Switch
         checked={available && checked}
-        disabled={checking || busy || !available}
-        loading={checking}
-        onChange={onChange}
+        disabled={checking || busy || switching || !available}
+        loading={isTunSwitchLoading(checking, switching)}
+        onChange={(enabled) => void toggleTun(enabled)}
         aria-label="TUN 模式"
       />
       <Button
         type="text"
         danger={status.installed}
-        disabled={checking || busy}
+        disabled={checking || busy || switching}
         icon={busy ? <LoadingOutlined spin /> : status.installed ? <DeleteOutlined /> : <ToolOutlined />}
         onClick={handleServiceAction}
         aria-label={serviceActionLabel}

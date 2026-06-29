@@ -28,13 +28,14 @@ import { IconPicker, defaultProxyGroupIcon } from "../components/IconPicker";
 import { Latency, PageHeader, Panel } from "../components/Common";
 import { useAppStore } from "../store/useAppStore";
 import type { ProxyGroup, ProxyGroupOrigin, ProxyGroupType, ProxyNode } from "../types";
-import { compareProxyNodesByLatency } from "../utils/nodeLatency";
+import { compareProxyNodesByLatency, findLowestLatencyProxyNode } from "../utils/nodeLatency";
 import { continentOptions, getNodeContinent, type ContinentFilter } from "../utils/nodeLocation";
 import {
   getSelectableProxyGroupMembers,
   isDirectOrRejectProxyGroup,
   isGlobalProxyGroup,
   isHiddenBuiltinProxyGroup,
+  resolveProxyGroupCurrentNode,
 } from "../utils/proxyGroups";
 
 const { Text } = Typography;
@@ -202,7 +203,13 @@ export function ProxiesPage() {
     const current = nodes.find((node) => node.id === group.currentNodeId);
     if (current) return { name: current.name, latency: simulatedLatencies[current.id] ?? current.latency };
     const nestedGroup = groups.find((candidate) => candidate.id === group.currentNodeId);
-    if (nestedGroup) return { name: nestedGroup.name };
+    if (nestedGroup) {
+      const currentNode = resolveProxyGroupCurrentNode(nestedGroup, groups, nodes);
+      return {
+        name: nestedGroup.name,
+        latency: currentNode ? simulatedLatencies[currentNode.id] ?? currentNode.latency : undefined,
+      };
+    }
     if (group.type === "Direct") return { name: "直连" };
     if (group.type === "Block") return { name: "REJECT" };
     return { name: "未选择" };
@@ -274,9 +281,14 @@ export function ProxiesPage() {
             testTimerRefs.current = [];
             const reachableResults = testedResults.filter((item) => Number.isFinite(item.latency));
             if (activeNodeGroup?.type === "URL-Test" && reachableResults.length) {
-              const bestNode = reachableResults.reduce((best, item) => item.latency < best.latency ? item : best);
-              selectProxy(bestNode.node.id, activeNodeGroup.id);
-              message.success(`已自动选择最低延迟节点 ${bestNode.node.name}`);
+              const bestNode = findLowestLatencyProxyNode(reachableResults.map((item) => ({
+                ...item.node,
+                latency: item.latency,
+                available: true,
+              })));
+              if (!bestNode) return;
+              void selectProxy(bestNode.id, activeNodeGroup.id);
+              message.success(`已自动选择最低延迟节点 ${bestNode.name}`);
             } else {
               message.success("测速完成");
             }
@@ -289,14 +301,14 @@ export function ProxiesPage() {
 
   const selectPickerNode = (node: ProxyNode) => {
     if (!activeNodeGroup || activeNodeGroup.type === "URL-Test" || !node.available || testingNodeIds.includes(node.id)) return;
-    selectProxy(node.id, activeNodeGroup.id);
+    void selectProxy(node.id, activeNodeGroup.id);
     message.success(`已切换至 ${node.name}`);
     closeNodePicker();
   };
 
   const selectPickerGroup = (group: ProxyGroup) => {
     if (!activeNodeGroup || isAutoTestGroup) return;
-    selectProxy(group.id, activeNodeGroup.id);
+    void selectProxy(group.id, activeNodeGroup.id);
     message.success(`已切换至代理组 ${group.name}`);
     closeNodePicker();
   };

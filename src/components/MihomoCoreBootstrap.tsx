@@ -45,6 +45,7 @@ export function MihomoCoreBootstrap() {
   const backendAvailable = useAppStore((state) => state.backendAvailable);
   const settings = useAppStore((state) => state.settings);
   const refreshRuntimeData = useAppStore((state) => state.refreshRuntimeData);
+  const testAutoProxyGroups = useAppStore((state) => state.testAutoProxyGroups);
   const initializedRef = useRef(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const [open, setOpen] = useState(false);
@@ -70,8 +71,9 @@ export function MihomoCoreBootstrap() {
     }
 
     await refreshRuntimeData();
+    await testAutoProxyGroups();
     setOpen(false);
-  }, [refreshRuntimeData, settings]);
+  }, [refreshRuntimeData, settings, testAutoProxyGroups]);
 
   const runDownload = useCallback(async () => {
     cleanupListener();

@@ -3,14 +3,14 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   DashboardOutlined,
-  GlobalOutlined,
   WifiOutlined,
 } from "@ant-design/icons";
 import { Flex, Radio, Switch, Typography } from "antd";
-import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
+import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis, type TooltipContentProps } from "recharts";
 import { useAppStore } from "../store/useAppStore";
 import { getLanIp } from "../backend/api";
 import { CompactCopy, Panel, StatusDot } from "../components/Common";
+import { buildTrafficChartData, type TrafficRange } from "../utils/trafficHistory";
 
 const { Text, Title } = Typography;
 
@@ -37,8 +37,34 @@ function formatTrafficValue(valueInMegabytes: number) {
   return `${value.toFixed(digits)} ${trafficUnits[unitIndex]}`;
 }
 
+function TrafficChartTooltip({ active, label, payload }: TooltipContentProps) {
+  if (!active || payload.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="traffic-chart-tooltip">
+      <div className="traffic-chart-tooltip-label">{String(payload[0]?.payload?.time ?? label ?? "")}</div>
+      <div className="traffic-chart-tooltip-list">
+        {payload.map((entry, index) => {
+          const name = String(entry.name ?? entry.dataKey ?? "");
+          const value = formatTrafficValue(Number(entry.value ?? 0));
+
+          return (
+            <div className="traffic-chart-tooltip-item" key={`${String(entry.dataKey ?? name)}-${index}`} title={`${name}：${value}`}>
+              <i style={{ backgroundColor: entry.color ?? entry.stroke }} aria-hidden="true" />
+              <span>{name}</span>
+              <strong>{value}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function DashboardPage() {
-  const [range, setRange] = useState("24h");
+  const [range, setRange] = useState<TrafficRange>("24h");
   const [lanIp, setLanIp] = useState("...");
   useEffect(() => {
     getLanIp().then(setLanIp).catch(console.error);
@@ -63,13 +89,11 @@ export function DashboardPage() {
     name: group.name,
     color: proxyGroupLineColors[index % proxyGroupLineColors.length],
   }));
-  const trafficChartData = trafficHistory;
   const isTrafficSeriesVisible = (key: string) => !hiddenTrafficSeries[key];
-  const visibleTrafficSeriesKeys = [
-    ...(isTrafficSeriesVisible(downloadSeriesKey) ? [downloadSeriesKey] : []),
-    ...(isTrafficSeriesVisible(uploadSeriesKey) ? [uploadSeriesKey] : []),
-    ...proxyGroupSeries.filter((series) => isTrafficSeriesVisible(series.key)).map((series) => series.key),
-  ];
+  const trafficSeriesKeys = [downloadSeriesKey, uploadSeriesKey, ...proxyGroupSeries.map((series) => series.key)];
+  const visibleTrafficSeriesKeys = trafficSeriesKeys.filter(isTrafficSeriesVisible);
+  const trafficChart = buildTrafficChartData(trafficHistory, range, trafficSeriesKeys);
+  const trafficChartData = trafficChart.data;
   const trafficYAxisMax = Math.max(
     1,
     ...trafficChartData.flatMap((item) => visibleTrafficSeriesKeys.map((key) => Number(item[key] ?? 0))),
@@ -80,6 +104,8 @@ export function DashboardPage() {
   const toggleTrafficSeries = (key: string) => {
     setHiddenTrafficSeries((current) => ({ ...current, [key]: !current[key] }));
   };
+  const showAllTrafficSeries = () => setHiddenTrafficSeries({});
+  const hideAllTrafficSeries = () => setHiddenTrafficSeries(Object.fromEntries(trafficSeriesKeys.map((key) => [key, true])));
 
   return (
     <div className="dashboard-page page-stack">
@@ -111,7 +137,6 @@ export function DashboardPage() {
                 <div className="traffic-metrics">
                   <TrafficMetric icon={<ArrowDownOutlined />} label="下载总量" value={realtimeTraffic.download.total} unit="" tone="green" />
                   <TrafficMetric icon={<ArrowUpOutlined />} label="上传总量" value={realtimeTraffic.upload.total} unit="" tone="blue" />
-                  <TrafficMetric icon={<GlobalOutlined />} label="局域网 IP" value={lanIp} unit="" tone="slate" />
                 </div>
                 <div className="traffic-distribution">
                   <div className="traffic-share">
@@ -125,9 +150,8 @@ export function DashboardPage() {
                     </div>
                   </div>
                   <div className="distribution-list">
-                    <dl><dt><i className="green-dot" /> 下载流量</dt><dd>{realtimeTraffic.download.total} <span>{runtime.lastSync}</span></dd></dl>
-                    <dl><dt><i className="blue-dot" /> 上传流量</dt><dd>{realtimeTraffic.upload.total} <span>{runtime.lastSync}</span></dd></dl>
-                    <dl><dt>局域网 IP</dt><dd>{lanIp}</dd></dl>
+                    <dl><dt><i className="green-dot" /> 下载流量</dt><dd>{realtimeTraffic.download.total}</dd></dl>
+                    <dl><dt><i className="blue-dot" /> 上传流量</dt><dd>{realtimeTraffic.upload.total}</dd></dl>
                   </div>
                 </div>
               </div>
@@ -136,7 +160,7 @@ export function DashboardPage() {
 
           <Panel
             className="traffic-history"
-            title={<Flex align="baseline" gap={12}><Title level={3}>连接统计</Title><Text type="secondary">（最近 {range === "24h" ? "24 小时" : range === "7d" ? "7 天" : "30 天"}）</Text></Flex>}
+            title={<Flex align="baseline" gap={12}><Title level={3}>连接统计</Title><Text type="secondary">（{range === "24h" ? "今日 0–24 时" : range === "7d" ? "最近 7 天" : "最近 30 天"}）</Text></Flex>}
           >
             <div className="traffic-history-layout">
               <div className="traffic-chart-pane">
@@ -147,9 +171,24 @@ export function DashboardPage() {
                       <linearGradient id="uploadFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1677ff" stopOpacity={0.22} /><stop offset="1" stopColor="#1677ff" stopOpacity={0.01} /></linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="0" vertical={false} stroke="var(--border-color)" />
-                    <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 12 }} />
+                    <XAxis
+                      type="number"
+                      dataKey="bucket"
+                      domain={trafficChart.domain}
+                      ticks={trafficChart.ticks}
+                      interval={0}
+                      allowDecimals={false}
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: "var(--muted)", fontSize: range === "30d" ? 10 : 12 }}
+                      tickFormatter={(value) => trafficChart.tickLabels[Number(value)] ?? ""}
+                      angle={range === "30d" ? -45 : 0}
+                      textAnchor={range === "30d" ? "end" : "middle"}
+                      height={range === "30d" ? 52 : 30}
+                      tickMargin={8}
+                    />
                     <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 12 }} domain={[0, trafficYAxisMax]} ticks={trafficYAxisTicks} tickFormatter={formatTrafficValue} width={72} />
-                    <ChartTooltip formatter={(value, name) => [formatTrafficValue(Number(value)), name]} contentStyle={{ borderRadius: 10, borderColor: "var(--border-color)", background: "var(--panel)" }} />
+                    <ChartTooltip content={TrafficChartTooltip} isAnimationActive={false} wrapperStyle={{ pointerEvents: "auto" }} />
                     {isTrafficSeriesVisible(downloadSeriesKey) && <Area type="monotone" dataKey={downloadSeriesKey} name="下载" stroke="#15ad62" strokeWidth={2} fill="url(#downloadFill)" />}
                     {isTrafficSeriesVisible(uploadSeriesKey) && <Area type="monotone" dataKey={uploadSeriesKey} name="上传" stroke="#1677ff" strokeWidth={2} fill="url(#uploadFill)" />}
                     {proxyGroupSeries.filter((series) => isTrafficSeriesVisible(series.key)).map((series) => (
@@ -160,11 +199,20 @@ export function DashboardPage() {
                 <Flex justify="center"><Radio.Group value={range} onChange={(event) => setRange(event.target.value)} optionType="button" buttonStyle="solid" size="small" options={[{ label: "24 小时", value: "24h" }, { label: "7 天", value: "7d" }, { label: "30 天", value: "30d" }]} /></Flex>
               </div>
               <div className="traffic-legend" aria-label="曲线显示控制">
-                <button type="button" className={`legend legend-button download${isTrafficSeriesVisible(downloadSeriesKey) ? "" : " is-hidden"}`} aria-pressed={isTrafficSeriesVisible(downloadSeriesKey)} onClick={() => toggleTrafficSeries(downloadSeriesKey)}>下载</button>
-                <button type="button" className={`legend legend-button upload${isTrafficSeriesVisible(uploadSeriesKey) ? "" : " is-hidden"}`} aria-pressed={isTrafficSeriesVisible(uploadSeriesKey)} onClick={() => toggleTrafficSeries(uploadSeriesKey)}>上传</button>
-                {proxyGroupSeries.map((series) => (
-                  <button key={series.id} type="button" className={`legend legend-button proxy-group${isTrafficSeriesVisible(series.key) ? "" : " is-hidden"}`} style={{ color: series.color }} aria-pressed={isTrafficSeriesVisible(series.key)} onClick={() => toggleTrafficSeries(series.key)}>{series.name}</button>
-                ))}
+                <div className="traffic-legend-toolbar">
+                  <span>显示曲线</span>
+                  <div>
+                    <button type="button" disabled={visibleTrafficSeriesKeys.length === trafficSeriesKeys.length} onClick={showAllTrafficSeries}>全选</button>
+                    <button type="button" disabled={visibleTrafficSeriesKeys.length === 0} onClick={hideAllTrafficSeries}>清空</button>
+                  </div>
+                </div>
+                <div className="traffic-legend-list">
+                  <button type="button" title="下载" className={`legend legend-button download${isTrafficSeriesVisible(downloadSeriesKey) ? "" : " is-hidden"}`} aria-pressed={isTrafficSeriesVisible(downloadSeriesKey)} onClick={() => toggleTrafficSeries(downloadSeriesKey)}>下载</button>
+                  <button type="button" title="上传" className={`legend legend-button upload${isTrafficSeriesVisible(uploadSeriesKey) ? "" : " is-hidden"}`} aria-pressed={isTrafficSeriesVisible(uploadSeriesKey)} onClick={() => toggleTrafficSeries(uploadSeriesKey)}>上传</button>
+                  {proxyGroupSeries.map((series) => (
+                    <button key={series.id} type="button" title={series.name} className={`legend legend-button proxy-group${isTrafficSeriesVisible(series.key) ? "" : " is-hidden"}`} style={{ color: series.color }} aria-pressed={isTrafficSeriesVisible(series.key)} onClick={() => toggleTrafficSeries(series.key)}>{series.name}</button>
+                  ))}
+                </div>
               </div>
             </div>
           </Panel>

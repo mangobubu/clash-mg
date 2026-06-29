@@ -369,6 +369,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "percent-encoding",
+ "png 0.18.1",
  "reqwest",
  "serde",
  "serde_json",
@@ -376,6 +377,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "windows",
  "winreg",
  "zip",
 ]

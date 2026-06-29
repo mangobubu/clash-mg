@@ -18,3 +18,15 @@ export function compareProxyNodesByLatency(
   if (leftRank === 0) return leftLatency - rightLatency;
   return 0;
 }
+
+export function findLowestLatencyProxyNode(
+  nodes: ProxyNode[],
+  selectLatency: LatencySelector = defaultLatencySelector,
+) {
+  return nodes.reduce<ProxyNode | undefined>((best, node) => {
+    const latency = selectLatency(node);
+    if (!node.available || latency <= 0) return best;
+    if (!best || latency < selectLatency(best)) return node;
+    return best;
+  }, undefined);
+}

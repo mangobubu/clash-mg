@@ -70,6 +70,10 @@ export function StatusDot({
 }
 
 export function Latency({ value, showBars = true }: { value: number; showBars?: boolean }) {
+  if (value <= 0) {
+    return <span className="latency latency-untested">未测速</span>;
+  }
+
   const tone = value < 100 ? "good" : value < 180 ? "medium" : "bad";
   return (
     <span className={`latency latency-${tone}`}>

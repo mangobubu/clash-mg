@@ -5,6 +5,7 @@ commands.allow = [
   "get_app_snapshot",
   "save_app_snapshot",
   "refresh_runtime_data",
+  "refresh_runtime_connections",
   "select_proxy_node",
   "close_runtime_connections",
   "refresh_proxy_providers",

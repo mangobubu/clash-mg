@@ -9,10 +9,11 @@ use reqwest::{header::AUTHORIZATION, Client};
 use serde_json::{json, Value};
 
 use crate::{
+    app_icon::application_icon_data_url,
     defaults::{current_time, value_to_string},
     models::{
-        AppSnapshot, Connection, DelayResult, LogEntry, ProxyGroup, ProxyNode, RoutingRule,
-        RuntimeInfo, SettingsMap, TrafficPoint,
+        AppSnapshot, Connection, ConnectionRefreshResult, DelayResult, LogEntry, ProxyGroup,
+        ProxyNode, RoutingRule, RuntimeInfo, SettingsMap, TrafficPoint,
     },
 };
 
@@ -20,6 +21,8 @@ const MANAGED_ORIGIN: &str = "managed";
 const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 const DELAY_TEST_TIMEOUT_MS: u64 = 10_000;
 const DELAY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const TRAFFIC_HISTORY_BUCKET_MS: i64 = 5 * 60 * 1000;
+const TRAFFIC_HISTORY_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 pub struct MihomoClient {
     base_url: String,
@@ -276,6 +279,22 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
     snapshot
 }
 
+pub async fn refresh_connections(
+    settings: SettingsMap,
+    nodes: Vec<ProxyNode>,
+) -> Result<ConnectionRefreshResult, String> {
+    let client = MihomoClient::from_settings(&settings)
+        .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
+    let value = client.get_json("/connections").await?;
+    let (upload_total, download_total) = connection_totals(&value);
+
+    Ok(ConnectionRefreshResult {
+        connections: parse_connections(&value, &nodes),
+        upload_total: format_bytes(upload_total),
+        download_total: format_bytes(download_total),
+    })
+}
+
 pub async fn select_proxy_node(
     mut snapshot: AppSnapshot,
     group_name: String,
@@ -433,6 +452,11 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
         .filter(|group| group.origin == "local")
         .map(|group| (group.name.clone(), group.clone()))
         .collect::<HashMap<_, _>>();
+    let previous_nodes_by_name = snapshot
+        .nodes
+        .iter()
+        .map(|node| (node.name.clone(), node.clone()))
+        .collect::<HashMap<_, _>>();
     let previous_selection = snapshot
         .groups
         .iter()
@@ -463,21 +487,32 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
         }
 
         let id = stable_id("node", name);
+        let previous = previous_nodes_by_name.get(name);
         name_to_node_id.insert(name.clone(), id.clone());
         managed_nodes.push(ProxyNode {
             id,
             name: name.clone(),
-            country: None,
-            flag: None,
+            country: previous.and_then(|node| node.country.clone()),
+            flag: previous.and_then(|node| node.flag.clone()),
             protocol: proxy_string(proxy, "type").unwrap_or_else(|| "Unknown".into()),
-            address: proxy_string(proxy, "server").unwrap_or_default(),
-            port: proxy_u64(proxy, "port").unwrap_or(0) as u16,
+            address: proxy_string(proxy, "server")
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| previous.map(|node| node.address.clone()))
+                .unwrap_or_default(),
+            port: proxy_u64(proxy, "port")
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .or_else(|| previous.map(|node| node.port))
+                .unwrap_or(0),
             latency: last_delay(proxy),
             password: None,
-            cipher: proxy_string(proxy, "cipher"),
+            cipher: proxy_string(proxy, "cipher")
+                .or_else(|| previous.and_then(|node| node.cipher.clone())),
             dialer_proxy: proxy_string(proxy, "dialer-proxy")
-                .or_else(|| proxy_string(proxy, "dialerProxy")),
-            group: proxy_string(proxy, "provider"),
+                .or_else(|| proxy_string(proxy, "dialerProxy"))
+                .or_else(|| previous.and_then(|node| node.dialer_proxy.clone())),
+            group: proxy_string(proxy, "provider")
+                .or_else(|| previous.and_then(|node| node.group.clone())),
             origin: MANAGED_ORIGIN.into(),
             available: last_delay(proxy) > 0 || !proxy_has_failed_history(proxy),
         });
@@ -577,26 +612,17 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
 }
 
 fn apply_connections(snapshot: &mut AppSnapshot, runtime: &mut RuntimeInfo, value: &Value) {
-    let upload_total = value
-        .get("uploadTotal")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let download_total = value
-        .get("downloadTotal")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let (upload_total, download_total) = connection_totals(value);
     runtime.upload_total = format_bytes(upload_total);
     runtime.download_total = format_bytes(download_total);
 
-    let connections = value
-        .get("connections")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().map(map_connection).collect::<Vec<_>>())
-        .unwrap_or_default();
-    snapshot.connections = connections;
+    snapshot.connections = parse_connections(value, &snapshot.nodes);
 
+    let now = Local::now();
+    let sampled_at = now.timestamp_millis();
     let mut point = TrafficPoint {
-        time: Local::now().format("%H:%M").to_string(),
+        time: now.format("%H:%M").to_string(),
+        sampled_at,
         download: bytes_to_megabytes(download_total),
         upload: bytes_to_megabytes(upload_total),
         proxy_groups: HashMap::new(),
@@ -617,11 +643,43 @@ fn apply_connections(snapshot: &mut AppSnapshot, runtime: &mut RuntimeInfo, valu
             .insert(format!("proxyGroupTraffic_{}", group.id), total);
     }
 
-    snapshot.traffic_history.push(point);
-    if snapshot.traffic_history.len() > 60 {
-        let overflow = snapshot.traffic_history.len() - 60;
-        snapshot.traffic_history.drain(0..overflow);
+    snapshot.traffic_history.retain(|item| {
+        item.sampled_at == 0 || item.sampled_at >= sampled_at - TRAFFIC_HISTORY_RETENTION_MS
+    });
+    if snapshot.traffic_history.last().is_some_and(|item| {
+        item.sampled_at > 0
+            && item.sampled_at / TRAFFIC_HISTORY_BUCKET_MS == sampled_at / TRAFFIC_HISTORY_BUCKET_MS
+    }) {
+        if let Some(last) = snapshot.traffic_history.last_mut() {
+            *last = point;
+        }
+    } else {
+        snapshot.traffic_history.push(point);
     }
+}
+
+fn connection_totals(value: &Value) -> (u64, u64) {
+    let upload_total = value
+        .get("uploadTotal")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let download_total = value
+        .get("downloadTotal")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (upload_total, download_total)
+}
+
+fn parse_connections(value: &Value, nodes: &[ProxyNode]) -> Vec<Connection> {
+    let mut connections = value
+        .get("connections")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(map_connection).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for connection in &mut connections {
+        enrich_connection_route(connection, nodes);
+    }
+    connections
 }
 
 fn apply_rules(snapshot: &mut AppSnapshot, value: &Value) {
@@ -725,15 +783,27 @@ fn map_connection(value: &Value) -> Connection {
     } else {
         host
     };
-    let process = proxy_string(metadata, "process")
-        .or_else(|| proxy_string(metadata, "processPath"))
-        .unwrap_or_else(|| "内核未识别".into());
-    let app = process
+    let raw_process = proxy_string(metadata, "process").filter(|value| !value.trim().is_empty());
+    let process_path = proxy_string(metadata, "processPath")
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            raw_process
+                .as_ref()
+                .filter(|value| value.contains(['/', '\\']))
+                .cloned()
+        })
+        .unwrap_or_default();
+    let process = raw_process
+        .as_deref()
+        .or_else(|| (!process_path.is_empty()).then_some(process_path.as_str()))
+        .unwrap_or("内核未识别")
         .rsplit(['/', '\\'])
         .next()
         .filter(|value| !value.is_empty())
-        .unwrap_or(&process)
+        .unwrap_or("内核未识别")
         .to_string();
+    let app = process.clone();
+    let icon = application_icon_data_url(&process_path).unwrap_or_default();
     let chains = value
         .get("chains")
         .and_then(Value::as_array)
@@ -749,11 +819,15 @@ fn map_connection(value: &Value) -> Connection {
     let policy = chain.first().cloned().unwrap_or_else(|| "DIRECT".into());
     let node = chain.last().cloned().unwrap_or_else(|| policy.clone());
 
+    let upload_bytes = proxy_u64(value, "upload").unwrap_or(0);
+    let download_bytes = proxy_u64(value, "download").unwrap_or(0);
+
     Connection {
         id,
         app,
         process,
-        icon: "◆".into(),
+        process_path,
+        icon,
         target: if port > 0 {
             format!("{target_host}:{port}")
         } else {
@@ -763,15 +837,71 @@ fn map_connection(value: &Value) -> Connection {
         protocol: proxy_string(metadata, "network")
             .unwrap_or_else(|| "TCP".into())
             .to_uppercase(),
-        upload: format_bytes(proxy_u64(value, "upload").unwrap_or(0)),
-        download: format_bytes(proxy_u64(value, "download").unwrap_or(0)),
+        upload_bytes,
+        download_bytes,
+        upload: format_bytes(upload_bytes),
+        download: format_bytes(download_bytes),
         duration: format_duration(proxy_string(value, "start").as_deref()),
         rule: proxy_string(value, "rule").unwrap_or_else(|| "MATCH".into()),
         policy,
         node,
+        entry_node: String::new(),
         chain,
         status: "活跃".into(),
     }
+}
+
+fn enrich_connection_route(connection: &mut Connection, nodes: &[ProxyNode]) {
+    let route_nodes = connection
+        .chain
+        .iter()
+        .filter_map(|name| nodes.iter().find(|node| node.name == *name))
+        .collect::<Vec<_>>();
+    let internal_target_node = (connection.process == "内核未识别" && connection.chain.len() >= 2)
+        .then(|| {
+            nodes.iter().find(|node| {
+                node.dialer_proxy
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && connection_targets_node(connection, node)
+            })
+        })
+        .flatten();
+
+    if let Some(exit_node) = internal_target_node.or_else(|| route_nodes.first().copied()) {
+        connection.node = exit_node.name.clone();
+    }
+    connection.entry_node = route_nodes
+        .last()
+        .filter(|entry_node| entry_node.name != connection.node)
+        .map(|entry_node| entry_node.name.clone())
+        .unwrap_or_default();
+
+    if let Some(node) = internal_target_node {
+        connection.app = "Mihomo 内部连接".into();
+        connection.process = format!(
+            "前置代理：{}",
+            node.dialer_proxy.as_deref().unwrap_or("未知")
+        );
+    }
+}
+
+fn connection_targets_node(connection: &Connection, node: &ProxyNode) -> bool {
+    if node.port == 0 || node.address.trim().is_empty() {
+        return false;
+    }
+
+    let port_suffix = format!(":{}", node.port);
+    let Some(host) = connection.target.strip_suffix(&port_suffix) else {
+        return false;
+    };
+    normalize_connection_host(host).eq_ignore_ascii_case(normalize_connection_host(&node.address))
+        || normalize_connection_host(&connection.ip)
+            .eq_ignore_ascii_case(normalize_connection_host(&node.address))
+}
+
+fn normalize_connection_host(value: &str) -> &str {
+    value.trim().trim_start_matches('[').trim_end_matches(']')
 }
 
 pub(crate) fn push_runtime_log(
@@ -966,6 +1096,117 @@ mod tests {
     use super::*;
     use crate::defaults::default_snapshot;
 
+    fn test_node(name: &str, address: &str, port: u16, dialer_proxy: Option<&str>) -> ProxyNode {
+        ProxyNode {
+            id: stable_id("node", name),
+            name: name.into(),
+            country: None,
+            flag: None,
+            protocol: "ss".into(),
+            address: address.into(),
+            port,
+            latency: 0,
+            password: None,
+            cipher: None,
+            dialer_proxy: dialer_proxy.map(str::to_string),
+            group: None,
+            origin: MANAGED_ORIGIN.into(),
+            available: true,
+        }
+    }
+
+    #[test]
+    fn maps_process_name_and_path_without_reusing_the_path_as_the_name() {
+        let connection = map_connection(&json!({
+            "id": "connection-1",
+            "metadata": {
+                "process": "language_server_windows_x64.exe",
+                "processPath": "Z:\\missing\\language_server_windows_x64.exe",
+                "host": "example.com",
+                "destinationPort": 443,
+                "network": "tcp"
+            },
+            "upload": 2048,
+            "download": 4096
+        }));
+
+        assert_eq!(connection.app, "language_server_windows_x64.exe");
+        assert_eq!(connection.process, "language_server_windows_x64.exe");
+        assert_eq!(
+            connection.process_path,
+            "Z:\\missing\\language_server_windows_x64.exe"
+        );
+        assert!(connection.icon.is_empty());
+        assert_eq!(connection.upload_bytes, 2048);
+        assert_eq!(connection.download_bytes, 4096);
+        assert_eq!(connection.upload, "2.00 KB");
+        assert_eq!(connection.download, "4.00 KB");
+    }
+
+    #[test]
+    fn marks_a_connection_unrecognized_only_when_process_metadata_is_missing() {
+        let connection = map_connection(&json!({
+            "id": "connection-2",
+            "metadata": {
+                "destinationIP": "203.0.113.1",
+                "destinationPort": 443
+            }
+        }));
+
+        assert_eq!(connection.app, "内核未识别");
+        assert_eq!(connection.process, "内核未识别");
+        assert!(connection.process_path.is_empty());
+        assert!(connection.icon.is_empty());
+    }
+
+    #[test]
+    fn classifies_dialer_proxy_transport_and_separates_exit_from_physical_entry() {
+        let nodes = vec![
+            test_node("美国出口", "vircs.wellux.top", 38898, Some("香港前置组")),
+            test_node("香港B", "hk.example.com", 443, None),
+        ];
+        let mut connection = map_connection(&json!({
+            "id": "connection-3",
+            "metadata": {
+                "host": "vircs.wellux.top",
+                "destinationIP": "203.0.113.2",
+                "destinationPort": 38898,
+                "network": "tcp"
+            },
+            "chains": ["香港B", "美国出口", "美国ATT家宽"]
+        }));
+
+        enrich_connection_route(&mut connection, &nodes);
+
+        assert_eq!(connection.app, "Mihomo 内部连接");
+        assert_eq!(connection.process, "前置代理：香港前置组");
+        assert_eq!(connection.node, "美国出口");
+        assert_eq!(connection.entry_node, "香港B");
+    }
+
+    #[test]
+    fn keeps_application_identity_while_correcting_a_chained_connections_exit() {
+        let nodes = vec![
+            test_node("美国出口", "us.example.com", 443, Some("香港前置组")),
+            test_node("香港B", "hk.example.com", 443, None),
+        ];
+        let mut connection = map_connection(&json!({
+            "id": "connection-4",
+            "metadata": {
+                "process": "chrome.exe",
+                "host": "www.example.com",
+                "destinationPort": 443
+            },
+            "chains": ["香港B", "美国出口", "美国ATT家宽"]
+        }));
+
+        enrich_connection_route(&mut connection, &nodes);
+
+        assert_eq!(connection.app, "chrome.exe");
+        assert_eq!(connection.node, "美国出口");
+        assert_eq!(connection.entry_node, "香港B");
+    }
+
     #[test]
     fn excludes_builtin_special_proxies_from_nodes() {
         let mut snapshot = default_snapshot();
@@ -987,6 +1228,36 @@ mod tests {
 
         assert_eq!(snapshot.nodes.len(), 1);
         assert_eq!(snapshot.nodes[0].name, "正常节点");
+    }
+
+    #[test]
+    fn preserves_config_only_node_fields_when_runtime_proxy_data_is_incomplete() {
+        let mut snapshot = default_snapshot();
+        snapshot.nodes.push(test_node(
+            "AT&T尔湾",
+            "vircs.wellux.top",
+            38898,
+            Some("美国ATT家宽"),
+        ));
+        let proxies = json!({
+            "proxies": {
+                "AT&T尔湾": {
+                    "type": "ss",
+                    "history": []
+                }
+            }
+        });
+
+        apply_proxies(&mut snapshot, &proxies);
+
+        let node = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name == "AT&T尔湾")
+            .expect("运行节点应被保留");
+        assert_eq!(node.address, "vircs.wellux.top");
+        assert_eq!(node.port, 38898);
+        assert_eq!(node.dialer_proxy.as_deref(), Some("美国ATT家宽"));
     }
 
     #[test]

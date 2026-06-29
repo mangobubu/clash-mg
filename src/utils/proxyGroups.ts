@@ -1,4 +1,4 @@
-import type { ProxyGroup } from "../types";
+import type { ProxyGroup, ProxyNode } from "../types";
 
 const hiddenBuiltinProxyGroupNames = new Set(["DIRECT", "GLOBAL", "REJECT"]);
 
@@ -39,6 +39,28 @@ export const getSelectableProxyGroupMembers = (
   !isGlobalProxyGroup(group)
   && group.id !== editingGroupId
   && (!editingGroupId || !referencesProxyGroup(groups, group.id, editingGroupId)));
+
+export const resolveProxyGroupCurrentNode = (
+  group: ProxyGroup,
+  groups: ProxyGroup[],
+  nodes: ProxyNode[],
+) => {
+  const groupById = new Map(groups.map((item) => [item.id, item]));
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const visitedGroupIds = new Set([group.id]);
+  let currentId = group.currentNodeId;
+
+  while (currentId) {
+    const currentNode = nodeById.get(currentId);
+    if (currentNode) return currentNode;
+    if (visitedGroupIds.has(currentId)) return undefined;
+
+    visitedGroupIds.add(currentId);
+    currentId = groupById.get(currentId)?.currentNodeId;
+  }
+
+  return undefined;
+};
 
 export const getRulePolicyNames = (groups: ProxyGroup[]) => {
   const names = groups

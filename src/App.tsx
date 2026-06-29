@@ -71,6 +71,7 @@ export default function App() {
   const { themeMode, accent, settings, hydrated, initializeAppState } = useAppStore();
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const initializedRef = useRef(false);
+  const isStandaloneWindow = /^#\/(?:connections-window|connection-detail\/)/.test(window.location.hash);
 
   useEffect(() => {
     if (initializedRef.current) return;
@@ -131,7 +132,7 @@ export default function App() {
       }}
     >
       <AntApp>
-        <MihomoCoreBootstrap />
+        {!isStandaloneWindow && <MihomoCoreBootstrap />}
         <HashRouter>
           <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>
             {!hydrated ? <div className="route-loading"><Spin size="large" /></div> : <Routes>

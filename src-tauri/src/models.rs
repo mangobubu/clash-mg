@@ -169,10 +169,16 @@ pub struct Connection {
     pub id: String,
     pub app: String,
     pub process: String,
+    #[serde(default)]
+    pub process_path: String,
     pub icon: String,
     pub target: String,
     pub ip: String,
     pub protocol: String,
+    #[serde(default)]
+    pub upload_bytes: u64,
+    #[serde(default)]
+    pub download_bytes: u64,
     pub upload: String,
     pub download: String,
     pub duration: String,
@@ -181,8 +187,18 @@ pub struct Connection {
     #[serde(default)]
     pub node: String,
     #[serde(default)]
+    pub entry_node: String,
+    #[serde(default)]
     pub chain: Vec<String>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionRefreshResult {
+    pub connections: Vec<Connection>,
+    pub upload_total: String,
+    pub download_total: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +238,8 @@ pub struct OverrideItem {
 #[serde(rename_all = "camelCase")]
 pub struct TrafficPoint {
     pub time: String,
+    #[serde(default)]
+    pub sampled_at: i64,
     pub download: f64,
     pub upload: f64,
     #[serde(flatten)]

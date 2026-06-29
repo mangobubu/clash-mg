@@ -92,18 +92,28 @@ export interface Connection {
   id: string;
   app: string;
   process: string;
+  processPath: string;
   icon: string;
   target: string;
   ip: string;
   protocol: "TCP" | "UDP";
+  uploadBytes: number;
+  downloadBytes: number;
   upload: string;
   download: string;
   duration: string;
   rule: string;
   policy: string;
   node: string;
+  entryNode: string;
   chain: string[];
   status: "活跃" | "已关闭";
+}
+
+export interface ConnectionRefreshResult {
+  connections: Connection[];
+  uploadTotal: string;
+  downloadTotal: string;
 }
 
 export type LogLevel = "DEBUG" | "INFO" | "SUCCESS" | "WARNING" | "ERROR";
@@ -136,9 +146,10 @@ export interface OverrideItem {
 
 export interface TrafficPoint {
   time: string;
+  sampledAt?: number;
   download: number;
   upload: number;
-  [key: string]: number | string;
+  [key: string]: number | string | undefined;
 }
 
 export interface RuntimeInfo {
@@ -228,16 +239,18 @@ export interface AppState extends AppData {
   backendAvailable: boolean;
   initializeAppState: () => Promise<void>;
   refreshRuntimeData: () => Promise<void>;
+  refreshConnections: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => void;
   setAccent: (color: string) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setConnected: (connected: boolean) => void;
-  selectProxy: (proxyId: string, groupId?: string) => void;
+  selectProxy: (proxyId: string, groupId?: string) => Promise<void>;
   selectGroup: (groupId: string) => void;
   addNode: (node: ProxyNode) => void;
   updateNode: (node: ProxyNode) => void;
   updateNodeLatency: (nodeId: string, latency: number, available?: boolean) => void;
   testNodeLatency: (nodeId: string) => Promise<DelayResult>;
+  testAutoProxyGroups: () => Promise<void>;
   addGroup: (group: ProxyGroup) => void;
   updateGroup: (group: ProxyGroup) => void;
   setProxyGroupOverride: (targetGroup: ProxyGroup, addedGroupIds: string[]) => void;
@@ -252,7 +265,7 @@ export interface AppState extends AppData {
   clearRuleOverride: (targetRule: RoutingRule) => void;
   deleteRule: (id: string) => void;
   reorderRule: (fromId: string, toId: string) => void;
-  closeConnections: (ids: string[]) => void;
+  closeConnections: (ids: string[]) => Promise<void>;
   clearClosedConnections: () => void;
   clearLogs: () => void;
   updateSetting: (key: string, value: SettingValue) => void;

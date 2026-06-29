@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProxyNode } from "../types";
-import { compareProxyNodesByLatency } from "./nodeLatency";
+import { compareProxyNodesByLatency, findLowestLatencyProxyNode } from "./nodeLatency";
 
 const node = (name: string, latency: number, available: boolean): ProxyNode => ({
   id: name,
@@ -36,5 +36,26 @@ describe("compareProxyNodesByLatency", () => {
     const displayedLatency = { 左: 50, 右: 120 };
 
     expect(compareProxyNodesByLatency(left, right, (item) => displayedLatency[item.name as "左" | "右"])).toBeLessThan(0);
+  });
+});
+
+describe("findLowestLatencyProxyNode", () => {
+  it("返回可用且已测速节点中延迟最低的节点", () => {
+    const nodes = [
+      node("不可用", 10, false),
+      node("未测速", 0, true),
+      node("较慢", 180, true),
+      node("最低", 40, true),
+    ];
+
+    expect(findLowestLatencyProxyNode(nodes)?.name).toBe("最低");
+  });
+
+  it("空列表或没有有效测速结果时返回 undefined", () => {
+    expect(findLowestLatencyProxyNode([])).toBeUndefined();
+    expect(findLowestLatencyProxyNode([
+      node("不可用", 10, false),
+      node("未测速", 0, true),
+    ])).toBeUndefined();
   });
 });

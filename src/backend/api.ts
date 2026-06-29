@@ -3,6 +3,7 @@ import { createEmptyAppData } from "../defaults/appDefaults";
 import type {
   AppData,
   AppSettings,
+  ConnectionRefreshResult,
   DelayResult,
   LocalSubscriptionRefreshResult,
   MihomoCoreLaunchResult,
@@ -33,6 +34,20 @@ export async function saveAppSnapshot(snapshot: AppData) {
 export async function refreshRuntimeSnapshot(snapshot: AppData) {
   if (!(await isTauriRuntime())) return snapshot;
   return invoke<AppData>("refresh_runtime_data", { snapshot });
+}
+
+export async function refreshRuntimeConnections(snapshot: AppData): Promise<ConnectionRefreshResult> {
+  if (!(await isTauriRuntime())) {
+    return {
+      connections: snapshot.connections,
+      uploadTotal: snapshot.runtime.uploadTotal,
+      downloadTotal: snapshot.runtime.downloadTotal,
+    };
+  }
+  return invoke<ConnectionRefreshResult>("refresh_runtime_connections", {
+    settings: snapshot.settings,
+    nodes: snapshot.nodes,
+  });
 }
 
 export async function selectRuntimeProxy(snapshot: AppData, groupName: string, nodeName: string) {

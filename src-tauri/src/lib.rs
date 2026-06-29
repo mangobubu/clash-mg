@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod app_icon;
 mod core;
 mod defaults;
 mod mihomo;
@@ -10,7 +11,10 @@ mod storage;
 mod subscription;
 mod system_proxy;
 
-use models::{AppSnapshot, DelayResult, LocalSubscriptionRefreshResult, SettingsMap};
+use models::{
+    AppSnapshot, ConnectionRefreshResult, DelayResult, LocalSubscriptionRefreshResult, ProxyNode,
+    SettingsMap,
+};
 
 const CONNECTIONS_WINDOW_LABEL: &str = "connections-window";
 
@@ -62,6 +66,16 @@ async fn open_connections_window(app: tauri::AppHandle) -> Result<(), String> {
         .focused(true)
         .build()
         .map_err(|error| error.to_string())?;
+
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            if let Err(error) = close_window.hide() {
+                eprintln!("隐藏连接窗口失败：{error}");
+            }
+        }
+    });
 
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -159,10 +173,19 @@ async fn refresh_runtime_data(
     app: tauri::AppHandle,
     snapshot: AppSnapshot,
 ) -> Result<AppSnapshot, String> {
+    let snapshot = subscription::enrich_runtime_nodes(&app, snapshot)?;
     let refreshed = mihomo::refresh_runtime_data(snapshot).await;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
+}
+
+#[tauri::command]
+async fn refresh_runtime_connections(
+    settings: SettingsMap,
+    nodes: Vec<ProxyNode>,
+) -> Result<ConnectionRefreshResult, String> {
+    mihomo::refresh_connections(settings, nodes).await
 }
 
 #[tauri::command]
@@ -299,12 +322,26 @@ fn get_lan_ip() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                for (label, secondary_window) in window.app_handle().webview_windows() {
+                    if label != "main" {
+                        if let Err(error) = secondary_window.destroy() {
+                            eprintln!("销毁子窗口“{label}”失败：{error}");
+                        }
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             open_connections_window,
             open_connection_detail_window,
             get_app_snapshot,
             save_app_snapshot,
             refresh_runtime_data,
+            refresh_runtime_connections,
             select_proxy_node,
             close_runtime_connections,
             refresh_proxy_providers,

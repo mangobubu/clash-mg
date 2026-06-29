@@ -5,6 +5,7 @@ import {
   deleteLocalSubscription,
   loadAppSnapshot,
   refreshLocalSubscriptions,
+  refreshRuntimeConnections,
   refreshRuntimeSnapshot,
   saveAppSnapshot,
   selectRuntimeProxy,
@@ -12,6 +13,7 @@ import {
 } from "../backend/api";
 import { createEmptyAppData, defaultSettings } from "../defaults/appDefaults";
 import type { AppData, AppState, DelayResult, OverrideItem, Subscription, SubscriptionRefreshResult } from "../types";
+import { findLowestLatencyProxyNode } from "../utils/nodeLatency";
 
 const currentTime = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 
@@ -26,6 +28,8 @@ const overrideKeyByScope: Record<OverrideScope, OverrideKey> = {
 
 const emptyAppData = createEmptyAppData();
 let persistTimer: number | undefined;
+let connectionRefreshRevision = 0;
+const closingConnectionIds = new Set<string>();
 
 const isRuntimeProviderRecord = (subscription: Subscription) =>
   subscription.description === "来自 Mihomo Proxy Provider" && subscription.tags.includes("Provider");
@@ -86,11 +90,15 @@ const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
     ...snapshot,
     groups: snapshot.groups.map((group) => ({ ...group, groupIds: group.groupIds ?? [] })),
     proxyGroupOverrides: snapshot.proxyGroupOverrides ?? [],
-    connections: snapshot.connections.map((connection) => ({
-      ...connection,
-      node: connection.node ?? connection.policy,
-      chain: connection.chain ?? [connection.policy],
-    })),
+    connections: snapshot.connections
+      .filter((connection) => !closingConnectionIds.has(connection.id))
+      .map((connection) => ({
+        ...connection,
+        uploadBytes: connection.uploadBytes ?? 0,
+        downloadBytes: connection.downloadBytes ?? 0,
+        node: connection.node ?? connection.policy,
+        chain: connection.chain ?? [connection.policy],
+      })),
     ruleOverrides: snapshot.ruleOverrides ?? [],
     subscriptions: snapshot.subscriptions.filter((subscription) => !isRuntimeProviderRecord(subscription)),
     hydrated: true,
@@ -140,9 +148,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   refreshRuntimeData: async () => {
+    const requestRevision = connectionRefreshRevision;
     try {
       const snapshot = await refreshRuntimeSnapshot(toAppData(get()));
-      applySnapshot(snapshot, true);
+      applySnapshot({
+        ...snapshot,
+        connections: requestRevision === connectionRefreshRevision
+          ? snapshot.connections
+          : get().connections,
+      }, true);
     } catch (error) {
       console.error(error);
       set((state) => ({
@@ -155,6 +169,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
         connected: false,
       }));
       appendLog("ERROR", "控制器", `运行数据刷新失败：${String(error)}`);
+    }
+  },
+  refreshConnections: async () => {
+    const requestRevision = connectionRefreshRevision;
+    try {
+      const result = await refreshRuntimeConnections(toAppData(get()));
+      if (requestRevision !== connectionRefreshRevision) return;
+      set((current) => ({
+        connections: result.connections.filter((connection) => !closingConnectionIds.has(connection.id)),
+        runtime: {
+          ...current.runtime,
+          controllerConnected: true,
+          uploadTotal: result.uploadTotal,
+          downloadTotal: result.downloadTotal,
+          lastSync: currentTime(),
+          error: undefined,
+        },
+        connected: true,
+      }));
+    } catch (error) {
+      console.error("连接列表自动刷新失败", error);
+      set((state) => ({
+        runtime: {
+          ...state.runtime,
+          controllerConnected: false,
+          error: String(error),
+          lastSync: currentTime(),
+        },
+        connected: false,
+      }));
     }
   },
 
@@ -185,7 +229,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     queuePersist();
   },
-  selectProxy: (proxyId, groupId) => {
+  selectProxy: async (proxyId, groupId) => {
     set((state) => {
       const node = state.nodes.find((item) => item.id === proxyId);
       const nestedGroup = state.groups.find((item) => item.id === proxyId);
@@ -215,9 +259,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const selectedProxy = current.nodes.find((item) => item.id === proxyId)
       ?? current.groups.find((item) => item.id === proxyId);
     if (group && selectedProxy) {
-      void selectRuntimeProxy(toAppData(current), group.name, selectedProxy.name)
-        .then((snapshot) => applySnapshot(snapshot, true))
-        .catch((error) => appendLog("ERROR", "代理", `Mihomo 代理切换失败：${String(error)}`));
+      try {
+        const snapshot = await selectRuntimeProxy(toAppData(current), group.name, selectedProxy.name);
+        applySnapshot(snapshot, true);
+      } catch (error) {
+        appendLog("ERROR", "代理", `Mihomo 代理切换失败：${String(error)}`);
+      }
     }
   },
   selectGroup: (selectedGroupId) => {
@@ -244,10 +291,38 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const node = get().nodes.find((item) => item.id === nodeId);
     if (!node) return { latency: 0, available: false, message: "节点不存在" };
 
-    const result = await testRuntimeProxyDelay(get().settings, node.name);
+    let result: DelayResult;
+    try {
+      result = await testRuntimeProxyDelay(get().settings, node.name);
+    } catch (error) {
+      result = { latency: 0, available: false, message: String(error) };
+    }
     get().updateNodeLatency(nodeId, result.latency, result.available);
     if (result.message) appendLog("WARNING", "测速", `${node.name} 测速失败：${result.message}`);
     return result;
+  },
+  testAutoProxyGroups: async () => {
+    const automaticGroups = get().groups.filter((group) => group.type === "URL-Test" && group.autoTest);
+    const nodeIds = [...new Set(automaticGroups.flatMap((group) => group.nodeIds))];
+    if (!automaticGroups.length || !nodeIds.length) return;
+
+    appendLog("INFO", "测速", `开始自动测试 ${automaticGroups.length} 个代理组中的 ${nodeIds.length} 个节点`);
+    await Promise.all(nodeIds.map((nodeId) => get().testNodeLatency(nodeId)));
+
+    let selectedCount = 0;
+    for (const group of automaticGroups) {
+      const currentNodes = get().nodes.filter((node) => group.nodeIds.includes(node.id));
+      const bestNode = findLowestLatencyProxyNode(currentNodes);
+      if (!bestNode) {
+        appendLog("WARNING", "测速", `代理组“${group.name}”没有可用的测速结果，已保持当前节点`);
+        continue;
+      }
+
+      await get().selectProxy(bestNode.id, group.id);
+      selectedCount += 1;
+    }
+
+    appendLog("SUCCESS", "测速", `自动测速完成，已为 ${selectedCount} 个代理组使用最低延迟节点`);
   },
   addGroup: (group) => {
     set((state) => ({ groups: [...state.groups, group] }));
@@ -403,17 +478,39 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
 
-  closeConnections: (ids) => {
+  closeConnections: async (ids) => {
+    const uniqueIds = [...new Set(ids)].filter((id) => !closingConnectionIds.has(id));
+    if (!uniqueIds.length) return;
+    const previousConnections = get().connections;
+
+    connectionRefreshRevision += 1;
+    uniqueIds.forEach((id) => closingConnectionIds.add(id));
     set((state) => ({
       connections: state.connections.map((connection) =>
-        ids.includes(connection.id) ? { ...connection, status: "已关闭" as const } : connection,
+        uniqueIds.includes(connection.id) ? { ...connection, status: "已关闭" as const } : connection,
       ),
     }));
-    queuePersist();
 
-    void closeRuntimeConnections(toAppData(get()), ids)
-      .then((snapshot) => applySnapshot(snapshot, true))
-      .catch((error) => appendLog("ERROR", "连接", `Mihomo 连接关闭失败：${String(error)}`));
+    try {
+      const snapshot = await closeRuntimeConnections(toAppData(get()), uniqueIds);
+      connectionRefreshRevision += 1;
+      applySnapshot(snapshot, true);
+    } catch (error) {
+      connectionRefreshRevision += 1;
+      uniqueIds.forEach((id) => closingConnectionIds.delete(id));
+      set((state) => ({
+        connections: state.connections.map((connection) =>
+          uniqueIds.includes(connection.id)
+            ? previousConnections.find((previous) => previous.id === connection.id) ?? connection
+            : connection,
+        ),
+      }));
+      appendLog("ERROR", "连接", `Mihomo 连接关闭失败：${String(error)}`);
+      await get().refreshConnections();
+      throw error;
+    } finally {
+      uniqueIds.forEach((id) => closingConnectionIds.delete(id));
+    }
   },
   clearClosedConnections: () => {
     set((state) => ({ connections: state.connections.filter((connection) => connection.status !== "已关闭") }));

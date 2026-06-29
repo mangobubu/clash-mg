@@ -10,6 +10,7 @@ import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip 
 import { useAppStore } from "../store/useAppStore";
 import { getLanIp } from "../backend/api";
 import { CompactCopy, Panel, StatusDot } from "../components/Common";
+import { TunServiceControl } from "../components/TunServiceControl";
 import { buildTrafficChartData, type TrafficRange } from "../utils/trafficHistory";
 
 const { Text, Title } = Typography;
@@ -124,7 +125,7 @@ export function DashboardPage() {
                   </div>
                 </div>
                 <div className="quick-toggles">
-                  <QuickToggle icon={<WifiOutlined />} tone="green" label="TUN 模式" value={Boolean(settings.tunMode)} onChange={() => toggleSetting("tunMode")} />
+                  <QuickToggle icon={<WifiOutlined />} tone="green" label="TUN 模式" value={Boolean(settings.tunMode)} onChange={() => toggleSetting("tunMode")} control={<TunServiceControl compact checked={Boolean(settings.tunMode)} onChange={(checked) => updateSetting("tunMode", checked)} />} />
                   <QuickToggle icon={<DashboardOutlined />} tone="cyan" label="系统代理" value={Boolean(settings.systemProxy)} onChange={() => toggleSetting("systemProxy")} />
                 </div>
               </div>
@@ -223,12 +224,12 @@ export function DashboardPage() {
   );
 }
 
-function QuickToggle({ icon, tone, label, value, onChange, statusText }: { icon: React.ReactNode; tone: string; label: string; value: boolean; onChange: () => void; statusText?: string }) {
+function QuickToggle({ icon, tone, label, value, onChange, statusText, control }: { icon: React.ReactNode; tone: string; label: string; value: boolean; onChange: () => void; statusText?: string; control?: React.ReactNode }) {
   return (
     <div className="quick-toggle">
       <span className={`quick-icon ${tone}`}>{icon}</span>
       <span><strong>{label}</strong>{statusText && <StatusDot status={value ? "success" : "default"}>{statusText}</StatusDot>}</span>
-      <Switch checked={value} onChange={onChange} />
+      {control ?? <Switch checked={value} onChange={onChange} />}
     </div>
   );
 }

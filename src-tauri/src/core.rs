@@ -7,11 +7,7 @@ use std::{
 };
 
 #[cfg(windows)]
-use std::{
-    ffi::OsStr,
-    os::windows::{ffi::OsStrExt, process::CommandExt},
-    ptr,
-};
+use std::{os::windows::process::CommandExt, ptr};
 
 use reqwest::{
     header::{ACCEPT, USER_AGENT},
@@ -21,14 +17,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
+    core_log,
     defaults::value_to_string,
     mihomo,
     models::{AppSnapshot, SettingsMap},
-    subscription,
+    subscription, tun_service,
 };
 
 const CORE_DIR_NAME: &str = "core";
+#[cfg(windows)]
 const CORE_EXE_NAME: &str = "mihomo.exe";
+#[cfg(not(windows))]
+const CORE_EXE_NAME: &str = "mihomo";
 const GENERATED_CONFIG_NAME: &str = "config.yaml";
 const DOWNLOAD_EVENT: &str = "mihomo-core-download-progress";
 const RELEASE_API_URL: &str = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest";
@@ -69,23 +69,7 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(windows)]
-const SW_HIDE: i32 = 0;
-
-#[cfg(windows)]
 const CP_OEMCP: u32 = 1;
-
-#[cfg(windows)]
-#[link(name = "shell32")]
-unsafe extern "system" {
-    fn ShellExecuteW(
-        hwnd: *mut core::ffi::c_void,
-        operation: *const u16,
-        file: *const u16,
-        parameters: *const u16,
-        directory: *const u16,
-        show_command: i32,
-    ) -> *mut core::ffi::c_void;
-}
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
@@ -165,7 +149,19 @@ pub async fn start_core(
     }
 
     let config_path = resolve_config_path(&app, &snapshot)?;
-    spawn_core_process(&app, &config_path)?;
+    if setting_bool(settings, "tunMode", false) {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|error| format!("读取 TUN 运行配置失败：{error}"))?;
+        let service_status = tun_service::status(&app)?;
+        if !service_status.installed || !service_status.version_compatible {
+            return Err(
+                "TUN 系统服务尚未安装或版本不匹配，请先通过 TUN 开关旁的按钮安装服务".into(),
+            );
+        }
+        tun_service::start_tun(&app, content, settings)?;
+    } else {
+        spawn_core_process(&app, &config_path, settings)?;
+    }
 
     let controller_ready = wait_controller_ready(settings).await;
     Ok(MihomoCoreLaunchResult {
@@ -206,14 +202,14 @@ async fn download_core_inner(app: &AppHandle) -> Result<MihomoCoreStatus, String
         .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|error| error.to_string())?;
-    let asset = resolve_latest_windows_amd64_asset(&client).await?;
+    let asset = resolve_latest_platform_asset(&client).await?;
 
-    let temp_zip = core_dir.join("mihomo.download.zip.tmp");
-    let temp_exe = core_dir.join("mihomo.exe.tmp");
+    let temp_archive = core_dir.join("mihomo.download.tmp");
+    let temp_exe = core_dir.join(format!("{CORE_EXE_NAME}.tmp"));
     let final_exe = core_executable_path(app)?;
 
-    if temp_zip.exists() {
-        fs::remove_file(&temp_zip).map_err(|error| error.to_string())?;
+    if temp_archive.exists() {
+        fs::remove_file(&temp_archive).map_err(|error| error.to_string())?;
     }
     if temp_exe.exists() {
         fs::remove_file(&temp_exe).map_err(|error| error.to_string())?;
@@ -228,7 +224,7 @@ async fn download_core_inner(app: &AppHandle) -> Result<MihomoCoreStatus, String
         0.0,
         Some(format!("正在下载 {}", asset.name)),
     );
-    download_asset(app, &client, &asset.browser_download_url, &temp_zip).await?;
+    download_asset(app, &client, &asset.browser_download_url, &temp_archive).await?;
 
     emit_progress(
         app,
@@ -239,13 +235,19 @@ async fn download_core_inner(app: &AppHandle) -> Result<MihomoCoreStatus, String
         100.0,
         Some("正在解压 Mihomo 内核".into()),
     );
-    extract_executable(&temp_zip, &temp_exe)?;
+    extract_executable(&temp_archive, &temp_exe, &asset.name)?;
 
     if final_exe.exists() {
         fs::remove_file(&final_exe).map_err(|error| error.to_string())?;
     }
     fs::rename(&temp_exe, &final_exe).map_err(|error| error.to_string())?;
-    let _ = fs::remove_file(&temp_zip);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&final_exe, fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+    }
+    let _ = fs::remove_file(&temp_archive);
 
     emit_progress(
         app,
@@ -259,7 +261,7 @@ async fn download_core_inner(app: &AppHandle) -> Result<MihomoCoreStatus, String
     core_status(app)
 }
 
-async fn resolve_latest_windows_amd64_asset(client: &Client) -> Result<GithubAsset, String> {
+async fn resolve_latest_platform_asset(client: &Client) -> Result<GithubAsset, String> {
     let release = client
         .get(RELEASE_API_URL)
         .header(USER_AGENT, "clash-mg")
@@ -282,14 +284,37 @@ async fn resolve_latest_windows_amd64_asset(client: &Client) -> Result<GithubAss
     release
         .assets
         .into_iter()
-        .filter(|asset| is_windows_amd64_zip(&asset.name))
+        .filter(|asset| is_current_platform_asset(&asset.name))
         .max_by_key(|asset| asset_score(&asset.name))
-        .ok_or_else(|| "未找到适用于 Windows x64 的 Mihomo 下载包".into())
+        .ok_or_else(|| {
+            format!(
+                "未找到适用于 {} {} 的 Mihomo 下载包",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        })
 }
 
-fn is_windows_amd64_zip(name: &str) -> bool {
+fn is_current_platform_asset(name: &str) -> bool {
+    is_platform_asset(name, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn is_platform_asset(name: &str, os: &str, arch: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    name.starts_with("mihomo-windows-amd64-") && name.ends_with(".zip")
+    let operating_system = match os {
+        "windows" => "windows",
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return false,
+    };
+    let architecture = match arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        _ => return false,
+    };
+    let prefix = format!("mihomo-{operating_system}-{architecture}-");
+    let expected_extension = if os == "windows" { ".zip" } else { ".gz" };
+    name.starts_with(&prefix) && name.ends_with(expected_extension)
 }
 
 fn asset_score(name: &str) -> u8 {
@@ -302,9 +327,6 @@ fn asset_score(name: &str) -> u8 {
         score += 10;
     }
     if !name.contains("-v1-") && !name.contains("-v2-") && !name.contains("-v3-") {
-        score += 10;
-    }
-    if name.starts_with("mihomo-windows-amd64-v") {
         score += 10;
     }
     score
@@ -359,9 +381,22 @@ async fn download_asset(
     Ok(())
 }
 
-fn extract_executable(zip_path: &Path, executable_path: &Path) -> Result<(), String> {
-    let zip_file = File::open(zip_path).map_err(|error| error.to_string())?;
-    let mut archive = zip::ZipArchive::new(zip_file).map_err(|error| error.to_string())?;
+fn extract_executable(
+    archive_path: &Path,
+    executable_path: &Path,
+    asset_name: &str,
+) -> Result<(), String> {
+    if asset_name.to_ascii_lowercase().ends_with(".gz") {
+        let archive = File::open(archive_path).map_err(|error| error.to_string())?;
+        let mut decoder = flate2::read::GzDecoder::new(archive);
+        let mut executable = File::create(executable_path).map_err(|error| error.to_string())?;
+        io::copy(&mut decoder, &mut executable).map_err(|error| error.to_string())?;
+        executable.flush().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let archive_file = File::open(archive_path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(archive_file).map_err(|error| error.to_string())?;
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
@@ -469,6 +504,20 @@ pub(crate) async fn sync_runtime_config(
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
+    if tun_changed {
+        fs::write(&path, &content).map_err(|error| format!("保存运行配置失败：{error}"))?;
+        switch_tun_runtime(
+            app,
+            snapshot,
+            &path,
+            &content,
+            previous_content.as_deref(),
+            expected_tun,
+        )
+        .await?;
+        return Ok(());
+    }
+
     if mihomo::controller_is_ready(&snapshot.settings).await {
         let controller = mihomo::MihomoClient::from_settings(&snapshot.settings)
             .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
@@ -495,7 +544,7 @@ pub(crate) async fn sync_runtime_config(
         } else {
             if let Err(error) = controller.reload_config(&content).await {
                 if expected_tun {
-                    restart_core_elevated(app, snapshot, previous_content.as_deref()).await?;
+                    restart_core_via_service(app, snapshot, previous_content.as_deref()).await?;
                     elevated_restart_completed = true;
                 } else {
                     return Err(format!("应用运行配置失败：{error}"));
@@ -504,7 +553,7 @@ pub(crate) async fn sync_runtime_config(
         }
         let mut actual_tun = controller.runtime_tun_enabled().await;
         if expected_tun && matches!(actual_tun, Ok(false)) && !elevated_restart_completed {
-            restart_core_elevated(app, snapshot, previous_content.as_deref()).await?;
+            restart_core_via_service(app, snapshot, previous_content.as_deref()).await?;
             actual_tun = controller.runtime_tun_enabled().await;
         }
         let verification = match actual_tun {
@@ -536,6 +585,110 @@ pub(crate) async fn sync_runtime_config(
     fs::write(path, content).map_err(|error| format!("保存运行配置失败：{error}"))
 }
 
+async fn switch_tun_runtime(
+    app: &AppHandle,
+    snapshot: &AppSnapshot,
+    config_path: &Path,
+    content: &str,
+    previous_content: Option<&str>,
+    expected_tun: bool,
+) -> Result<(), String> {
+    if expected_tun {
+        let service_status = tun_service::status(app)?;
+        if !service_status.installed || !service_status.version_compatible {
+            restore_config_file(config_path, previous_content)?;
+            return Err("尚未安装可用的 TUN 系统服务，请先点击 TUN 开关旁的安装按钮".into());
+        }
+
+        stop_managed_core(app, &snapshot.settings).await?;
+        wait_controller_stopped(&snapshot.settings).await;
+        if let Err(error) = tun_service::start_tun(app, content.to_string(), &snapshot.settings) {
+            let recovery =
+                restore_non_tun_runtime(app, snapshot, config_path, previous_content).await;
+            return Err(match recovery {
+                Ok(()) => format!("通过系统服务开启 TUN 失败：{error}；已恢复原运行配置"),
+                Err(recovery_error) => format!(
+                    "通过系统服务开启 TUN 失败：{error}；恢复原运行配置失败：{recovery_error}"
+                ),
+            });
+        }
+    } else {
+        if let Err(error) = tun_service::stop_tun(app) {
+            restore_config_file(config_path, previous_content)?;
+            return Err(format!("通过系统服务关闭 TUN 失败：{error}"));
+        }
+        wait_controller_stopped(&snapshot.settings).await;
+        stop_managed_core(app, &snapshot.settings).await?;
+        wait_controller_stopped(&snapshot.settings).await;
+        if let Err(error) = spawn_core_process(app, config_path, &snapshot.settings) {
+            if let Some(previous) = previous_content {
+                let _ = fs::write(config_path, previous);
+                let _ = tun_service::start_tun(app, previous.to_string(), &snapshot.settings);
+            }
+            return Err(format!("关闭 TUN 后恢复普通 Mihomo 进程失败：{error}"));
+        }
+    }
+
+    if !wait_controller_ready(&snapshot.settings).await {
+        if expected_tun {
+            let recovery =
+                restore_non_tun_runtime(app, snapshot, config_path, previous_content).await;
+            return Err(match recovery {
+                Ok(()) => "切换 TUN 后 Mihomo 控制器未能就绪；已恢复原运行配置".into(),
+                Err(recovery_error) => format!(
+                    "切换 TUN 后 Mihomo 控制器未能就绪；恢复原运行配置失败：{recovery_error}"
+                ),
+            });
+        }
+        return Err("切换 TUN 后 Mihomo 控制器未能就绪".into());
+    }
+    let controller = mihomo::MihomoClient::from_settings(&snapshot.settings)
+        .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
+    let actual_tun = controller.runtime_tun_enabled().await?;
+    if actual_tun != expected_tun {
+        if expected_tun {
+            let recovery =
+                restore_non_tun_runtime(app, snapshot, config_path, previous_content).await;
+            return Err(match recovery {
+                Ok(()) => "TUN 运行状态校验失败：期望开启，Mihomo 实际为关闭；已恢复原运行配置".into(),
+                Err(recovery_error) => format!(
+                    "TUN 运行状态校验失败：期望开启，Mihomo 实际为关闭；恢复原运行配置失败：{recovery_error}"
+                ),
+            });
+        }
+        return Err(format!(
+            "TUN 运行状态校验失败：期望 {}，Mihomo 实际为 {}",
+            if expected_tun { "开启" } else { "关闭" },
+            if actual_tun { "开启" } else { "关闭" }
+        ));
+    }
+    Ok(())
+}
+
+fn restore_config_file(path: &Path, previous_content: Option<&str>) -> Result<(), String> {
+    if let Some(previous) = previous_content {
+        fs::write(path, previous).map_err(|error| format!("恢复原运行配置失败：{error}"))?;
+    }
+    Ok(())
+}
+
+async fn restore_non_tun_runtime(
+    app: &AppHandle,
+    snapshot: &AppSnapshot,
+    config_path: &Path,
+    previous_content: Option<&str>,
+) -> Result<(), String> {
+    tun_service::stop_tun(app)?;
+    restore_config_file(config_path, previous_content)?;
+    stop_managed_core(app, &snapshot.settings).await?;
+    wait_controller_stopped(&snapshot.settings).await;
+    spawn_core_process(app, config_path, &snapshot.settings)?;
+    if !wait_controller_ready(&snapshot.settings).await {
+        return Err("普通 Mihomo 控制器未能就绪".into());
+    }
+    Ok(())
+}
+
 async fn rollback_runtime_config(
     controller: &mihomo::MihomoClient,
     path: &Path,
@@ -561,9 +714,19 @@ fn config_tun_enabled(content: &str) -> Option<bool> {
         .as_bool()
 }
 
-fn spawn_core_process(app: &AppHandle, config_path: &Path) -> Result<(), String> {
+fn spawn_core_process(
+    app: &AppHandle,
+    config_path: &Path,
+    settings: &SettingsMap,
+) -> Result<(), String> {
     let executable = core_executable_path(app)?;
     let directory = core_dir(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let log_options = core_log::options_from_settings(&app_data_dir, settings);
+    let (stdout, stderr) = core_log::open_log_stdio(&log_options)?;
     let mut command = Command::new(executable);
     command
         .arg("-d")
@@ -572,84 +735,152 @@ fn spawn_core_process(app: &AppHandle, config_path: &Path) -> Result<(), String>
         .arg(config_path)
         .current_dir(directory)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(stdout)
+        .stderr(stderr);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    command
+    let mut child = command
         .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("启动 Mihomo 内核失败：{error}"))
+        .map_err(|error| format!("启动 Mihomo 内核失败：{error}"))?;
+    let pid = child.id();
+    let pid_path = managed_core_pid_path(app)?;
+    if let Err(error) = fs::write(&pid_path, pid.to_string()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("记录 Mihomo 进程失败：{error}"));
+    }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let recorded_pid = fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        if recorded_pid == Some(pid) {
+            let _ = fs::remove_file(pid_path);
+        }
+    });
+    Ok(())
 }
 
-#[cfg(windows)]
-async fn restart_core_elevated(
+fn managed_core_pid_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(core_dir(app)?.join("mihomo.pid"))
+}
+
+async fn stop_managed_core(app: &AppHandle, settings: &SettingsMap) -> Result<(), String> {
+    let pid_path = managed_core_pid_path(app)?;
+    let stored_pid = fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    #[cfg(windows)]
+    let pid = stored_pid.or_else(|| controller_process_id(settings).ok());
+    #[cfg(not(windows))]
+    let pid = stored_pid;
+    let Some(pid) = pid else {
+        return if mihomo::controller_is_ready(settings).await {
+            Err("Mihomo 控制器仍在运行，但未找到由应用启动的进程记录".into())
+        } else {
+            Ok(())
+        };
+    };
+
+    #[cfg(windows)]
+    stop_process(pid)?;
+    #[cfg(not(windows))]
+    {
+        if !unix_process_is_running(pid)? {
+            let _ = fs::remove_file(pid_path);
+            return Ok(());
+        }
+        let status = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| format!("停止旧 Mihomo 进程失败：{error}"))?;
+        if !status.success() {
+            return Err("停止旧 Mihomo 进程失败".into());
+        }
+        if !wait_unix_process_stopped(pid).await? {
+            let status = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|error| format!("强制停止旧 Mihomo 进程失败：{error}"))?;
+            if !status.success() || !wait_unix_process_stopped(pid).await? {
+                return Err("旧 Mihomo 进程未能在超时前退出".into());
+            }
+        }
+    }
+
+    let _ = fs::remove_file(pid_path);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn unix_process_is_running(pid: u32) -> Result<bool, String> {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| format!("检查 Mihomo 进程状态失败：{error}"))
+}
+
+#[cfg(not(windows))]
+async fn wait_unix_process_stopped(pid: u32) -> Result<bool, String> {
+    for _ in 0..50 {
+        if !unix_process_is_running(pid)? {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(false)
+}
+
+async fn wait_controller_stopped(settings: &SettingsMap) {
+    for _ in 0..20 {
+        if !mihomo::controller_is_ready(settings).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn restart_core_via_service(
     app: &AppHandle,
     snapshot: &AppSnapshot,
     previous_content: Option<&str>,
 ) -> Result<(), String> {
     let config_path = core_dir(app)?.join(GENERATED_CONFIG_NAME);
-    let pid = controller_process_id(&snapshot.settings)?;
-    stop_process(pid)?;
-
-    let executable = core_executable_path(app)?;
-    let directory = core_dir(app)?;
-    let parameters = format!(
-        "-d {} -f {}",
-        quote_windows_argument(&directory.to_string_lossy()),
-        quote_windows_argument(&config_path.to_string_lossy()),
-    );
-    let operation = wide_string("runas");
-    let executable = wide_os_string(executable.as_os_str());
-    let parameters = wide_string(&parameters);
-    let directory_wide = wide_os_string(directory.as_os_str());
-    let result = unsafe {
-        ShellExecuteW(
-            ptr::null_mut(),
-            operation.as_ptr(),
-            executable.as_ptr(),
-            parameters.as_ptr(),
-            directory_wide.as_ptr(),
-            SW_HIDE,
-        )
-    } as isize;
-    if result <= 32 {
-        restore_non_tun_core(app, snapshot, &config_path, previous_content).await;
-        return Err(if result == 5 {
-            "开启 TUN 需要管理员权限；已取消提权并恢复原运行配置".into()
-        } else {
-            format!("以管理员权限启动 Mihomo 失败（错误码 {result}）；已恢复原运行配置")
-        });
-    }
+    let content = fs::read_to_string(&config_path)
+        .map_err(|error| format!("读取 TUN 运行配置失败：{error}"))?;
+    let _ = tun_service::stop_tun(app);
+    tun_service::start_tun(app, content, &snapshot.settings)?;
 
     if !wait_controller_ready(&snapshot.settings).await {
-        restore_non_tun_core(app, snapshot, &config_path, previous_content).await;
-        return Err("管理员权限下的 Mihomo 未能就绪；已恢复原运行配置".into());
+        let recovery = restore_non_tun_runtime(app, snapshot, &config_path, previous_content).await;
+        return Err(match recovery {
+            Ok(()) => "系统服务托管的 Mihomo 未能就绪；已恢复原运行配置".into(),
+            Err(recovery_error) => {
+                format!("系统服务托管的 Mihomo 未能就绪；恢复原运行配置失败：{recovery_error}")
+            }
+        });
     }
     if !mihomo::MihomoClient::from_settings(&snapshot.settings)
         .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?
         .runtime_tun_enabled()
         .await?
     {
-        restore_non_tun_core(app, snapshot, &config_path, previous_content).await;
-        return Err("管理员权限下的 Mihomo 仍未启用 TUN；已恢复原运行配置".into());
+        let recovery = restore_non_tun_runtime(app, snapshot, &config_path, previous_content).await;
+        return Err(match recovery {
+            Ok(()) => "系统服务托管的 Mihomo 仍未启用 TUN；已恢复原运行配置".into(),
+            Err(recovery_error) => {
+                format!("系统服务托管的 Mihomo 仍未启用 TUN；恢复原运行配置失败：{recovery_error}")
+            }
+        });
     }
     Ok(())
-}
-
-#[cfg(windows)]
-async fn restore_non_tun_core(
-    app: &AppHandle,
-    snapshot: &AppSnapshot,
-    config_path: &Path,
-    previous_content: Option<&str>,
-) {
-    if let Some(previous) = previous_content {
-        let _ = fs::write(config_path, previous);
-    }
-    if spawn_core_process(app, config_path).is_ok() {
-        let _ = wait_controller_ready(&snapshot.settings).await;
-    }
 }
 
 #[cfg(windows)]
@@ -773,25 +1004,6 @@ fn quote_windows_argument(value: &str) -> String {
 }
 
 #[cfg(windows)]
-fn wide_string(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain(Some(0)).collect()
-}
-
-#[cfg(windows)]
-fn wide_os_string(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(Some(0)).collect()
-}
-
-#[cfg(not(windows))]
-async fn restart_core_elevated(
-    _: &AppHandle,
-    _: &AppSnapshot,
-    _: Option<&str>,
-) -> Result<(), String> {
-    Err("当前平台不支持通过提权启动 TUN".into())
-}
-
-#[cfg(windows)]
 fn stale_tun_default_route_present() -> bool {
     let mut command = Command::new("route.exe");
     command.args(["print", "-4"]);
@@ -846,6 +1058,46 @@ pub(crate) fn core_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(crate) fn core_executable_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(core_dir(app)?.join(CORE_EXE_NAME))
+}
+
+pub(crate) fn merge_core_failure_logs(app: &AppHandle, snapshot: &mut AppSnapshot) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let options = core_log::options_from_settings(&app_data_dir, &snapshot.settings);
+    if !options.enabled {
+        return;
+    }
+
+    let content = if setting_bool(&snapshot.settings, "tunMode", false) {
+        tun_service::read_core_log(app)
+    } else {
+        core_log::read_log_tail(&options.path, core_log::LOG_TAIL_MAX_BYTES)
+    };
+    let Ok(content) = content else {
+        return;
+    };
+
+    let limit = snapshot
+        .settings
+        .get("maxLogRows")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1000);
+    let entries = core_log::failure_entries(&content, limit);
+    if entries.is_empty() {
+        return;
+    }
+
+    let incoming_ids = entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    snapshot
+        .logs
+        .retain(|entry| !incoming_ids.contains(entry.id.as_str()));
+    snapshot.logs.splice(0..0, entries);
+    snapshot.logs.truncate(limit);
 }
 
 fn controller_address(settings: &SettingsMap) -> String {
@@ -992,6 +1244,30 @@ mod tests {
             Some(true)
         );
         assert_eq!(config_tun_enabled("rules: []\n"), None);
+    }
+
+    #[test]
+    fn matches_mihomo_release_asset_for_each_desktop_platform() {
+        assert!(is_platform_asset(
+            "mihomo-windows-amd64-v3-v1.19.10.zip",
+            "windows",
+            "x86_64"
+        ));
+        assert!(is_platform_asset(
+            "mihomo-darwin-arm64-v1.19.10.gz",
+            "macos",
+            "aarch64"
+        ));
+        assert!(is_platform_asset(
+            "mihomo-linux-amd64-v1.19.10.gz",
+            "linux",
+            "x86_64"
+        ));
+        assert!(!is_platform_asset(
+            "mihomo-linux-amd64-v1.19.10.gz",
+            "windows",
+            "x86_64"
+        ));
     }
 
     #[cfg(windows)]

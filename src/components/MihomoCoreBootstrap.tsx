@@ -5,6 +5,7 @@ import { Button, Flex, Modal, Progress, Typography } from "antd";
 import { downloadMihomoCore, getMihomoCoreStatus, startMihomoCore } from "../backend/api";
 import { useAppStore } from "../store/useAppStore";
 import type { MihomoCoreDownloadProgress } from "../types";
+import { isTunServiceAvailable, useTunService } from "./TunServiceControl";
 
 const downloadEventName = "mihomo-core-download-progress";
 
@@ -46,6 +47,8 @@ export function MihomoCoreBootstrap() {
   const settings = useAppStore((state) => state.settings);
   const refreshRuntimeData = useAppStore((state) => state.refreshRuntimeData);
   const testAutoProxyGroups = useAppStore((state) => state.testAutoProxyGroups);
+  const updateSetting = useAppStore((state) => state.updateSetting);
+  const { status: tunServiceStatus, checking: checkingTunService } = useTunService();
   const initializedRef = useRef(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const [open, setOpen] = useState(false);
@@ -62,7 +65,12 @@ export function MihomoCoreBootstrap() {
 
   const startCoreAndRefresh = useCallback(async () => {
     setPhase("starting");
-    const result = await startMihomoCore(settings);
+    const tunServiceAvailable = isTunServiceAvailable(tunServiceStatus);
+    const effectiveSettings = settings.tunMode && !tunServiceAvailable
+      ? { ...settings, tunMode: false }
+      : settings;
+    if (settings.tunMode && !tunServiceAvailable) updateSetting("tunMode", false);
+    const result = await startMihomoCore(effectiveSettings);
     if (!result.controllerReady) {
       setOpen(true);
       setPhase("failed");
@@ -73,7 +81,7 @@ export function MihomoCoreBootstrap() {
     await refreshRuntimeData();
     await testAutoProxyGroups();
     setOpen(false);
-  }, [refreshRuntimeData, settings, testAutoProxyGroups]);
+  }, [refreshRuntimeData, settings, testAutoProxyGroups, tunServiceStatus.installed, tunServiceStatus.message, tunServiceStatus.versionCompatible, updateSetting]);
 
   const runDownload = useCallback(async () => {
     cleanupListener();
@@ -105,7 +113,7 @@ export function MihomoCoreBootstrap() {
   }, [cleanupListener, startCoreAndRefresh]);
 
   useEffect(() => {
-    if (!hydrated || !backendAvailable || initializedRef.current) return;
+    if (!hydrated || !backendAvailable || checkingTunService || initializedRef.current) return;
     initializedRef.current = true;
 
     const bootstrap = async () => {
@@ -131,7 +139,7 @@ export function MihomoCoreBootstrap() {
     return () => {
       cleanupListener();
     };
-  }, [backendAvailable, cleanupListener, hydrated, runDownload, startCoreAndRefresh]);
+  }, [backendAvailable, checkingTunService, cleanupListener, hydrated, runDownload, startCoreAndRefresh]);
 
   const percent = Math.round(progress.percent || 0);
   const title = phase === "failed" ? "Mihomo 内核未就绪" : "准备 Mihomo 内核";

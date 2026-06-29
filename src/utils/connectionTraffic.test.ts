@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Connection } from "../types";
 import {
+  applyConnectionRates,
   calculateConnectionRates,
+  compareConnectionRates,
   durationToSeconds,
   formatByteRate,
   type ConnectionTrafficSample,
@@ -58,6 +60,26 @@ describe("calculateConnectionRates", () => {
       totals: { "connection-1": { upload: 8192, download: 16384 } },
     };
     expect(calculateConnectionRates([connection()], 2000, previous).rates["connection-1"]).toEqual({ upload: 0, download: 0 });
+  });
+});
+
+describe("实时速率排序", () => {
+  it("速率更新后使用最新结果重新确定降序首行", () => {
+    const connections = [
+      connection({ id: "connection-1" }),
+      connection({ id: "connection-2" }),
+    ];
+    const initialRows = applyConnectionRates(connections, {
+      "connection-1": { upload: 100, download: 100 },
+      "connection-2": { upload: 200, download: 200 },
+    });
+    const updatedRows = applyConnectionRates(connections, {
+      "connection-1": { upload: 500, download: 500 },
+      "connection-2": { upload: 200, download: 200 },
+    });
+
+    expect([...initialRows].sort(compareConnectionRates).reverse()[0].id).toBe("connection-2");
+    expect([...updatedRows].sort(compareConnectionRates).reverse()[0].id).toBe("connection-1");
   });
 });
 

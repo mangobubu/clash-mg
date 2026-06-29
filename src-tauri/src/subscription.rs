@@ -769,7 +769,12 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
             "Mixed",
         ))),
     );
-    tun.insert(key("device"), Value::String("Meta".into()));
+    let tun_device = if cfg!(target_os = "macos") {
+        "utun"
+    } else {
+        "Meta"
+    };
+    tun.insert(key("device"), Value::String(tun_device.into()));
     tun.insert(
         key("dns-hijack"),
         Value::Sequence(vec![
@@ -1773,6 +1778,47 @@ mod tests {
     }
 
     #[test]
+    fn serializes_local_process_rules_before_managed_rules() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.rules.extend([
+            crate::models::RoutingRule {
+                id: "process-name".into(),
+                rule_type: "PROCESS-NAME".into(),
+                content: "chrome.exe".into(),
+                policy: "浏览器代理".into(),
+                source: "local".into(),
+                enabled: true,
+                no_resolve: false,
+                wildcard: false,
+                note: None,
+            },
+            crate::models::RoutingRule {
+                id: "process-path".into(),
+                rule_type: "PROCESS-PATH".into(),
+                content: "C:\\Apps\\Example.exe".into(),
+                policy: "DIRECT".into(),
+                source: "local".into(),
+                enabled: true,
+                no_resolve: false,
+                wildcard: false,
+                note: None,
+            },
+        ]);
+        let mut rules = vec![Value::String("DOMAIN-SUFFIX,example.com,托管代理".into())];
+
+        apply_local_rules(&mut rules, &snapshot);
+
+        assert_eq!(
+            rules,
+            vec![
+                Value::String("PROCESS-NAME,chrome.exe,浏览器代理".into()),
+                Value::String("PROCESS-PATH,C:\\Apps\\Example.exe,DIRECT".into()),
+                Value::String("DOMAIN-SUFFIX,example.com,托管代理".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn reapplies_local_group_override_after_subscription_groups_change() {
         let mut snapshot = crate::defaults::default_snapshot();
         snapshot.groups.extend([
@@ -2048,7 +2094,15 @@ mod tests {
             tun.get(key("stack")).and_then(Value::as_str),
             Some("gvisor")
         );
-        assert_eq!(tun.get(key("device")).and_then(Value::as_str), Some("Meta"));
+        let expected_device = if cfg!(target_os = "macos") {
+            "utun"
+        } else {
+            "Meta"
+        };
+        assert_eq!(
+            tun.get(key("device")).and_then(Value::as_str),
+            Some(expected_device)
+        );
         assert_eq!(
             tun.get(key("strict-route")).and_then(Value::as_bool),
             Some(true)

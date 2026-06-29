@@ -64,7 +64,16 @@ export interface Subscription {
   tags: string[];
 }
 
-export type RuleType = "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN" | "IP-CIDR" | "RULE-SET" | "GEOIP" | "MATCH";
+export type RuleType =
+  | "DOMAIN-SUFFIX"
+  | "DOMAIN-KEYWORD"
+  | "DOMAIN"
+  | "IP-CIDR"
+  | "RULE-SET"
+  | "GEOIP"
+  | "PROCESS-NAME"
+  | "PROCESS-PATH"
+  | "MATCH";
 export type RuleOrigin = "managed" | "local";
 
 export interface RoutingRule {
@@ -108,6 +117,11 @@ export interface Connection {
   entryNode: string;
   chain: string[];
   status: "活跃" | "已关闭";
+}
+
+export interface RunningProcess {
+  name: string;
+  path: string;
 }
 
 export interface ConnectionRefreshResult {
@@ -187,6 +201,14 @@ export interface MihomoCoreDownloadProgress {
   totalBytes?: number;
   speedBytesPerSecond: number;
   percent: number;
+  message?: string;
+}
+
+export interface TunServiceStatus {
+  installed: boolean;
+  running: boolean;
+  versionCompatible: boolean;
+  serviceVersion?: string;
   message?: string;
 }
 

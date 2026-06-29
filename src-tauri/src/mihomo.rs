@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local, Utc};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use reqwest::{header::AUTHORIZATION, Client};
 use serde_json::{json, Value};
 
@@ -304,11 +304,36 @@ pub async fn select_proxy_node(
         .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
     let path = format!("/proxies/{}", encode_component(&group_name));
     client.put_json(&path, json!({ "name": node_name })).await?;
+
+    if let Ok(value) = client.get_json("/connections").await {
+        if let Some(connections) = value.get("connections").and_then(Value::as_array) {
+            for conn in connections {
+                let has_group = conn
+                    .get("chains")
+                    .and_then(Value::as_array)
+                    .map(|chains| {
+                        chains
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|c| c == group_name)
+                    })
+                    .unwrap_or(false);
+
+                if has_group {
+                    if let Some(id) = conn.get("id").and_then(Value::as_str) {
+                        let delete_path = format!("/connections/{}", encode_component(id));
+                        let _ = client.delete(&delete_path).await;
+                    }
+                }
+            }
+        }
+    }
+
     push_runtime_log(
         &mut snapshot,
         "SUCCESS",
         "代理",
-        &format!("已通过 Mihomo 控制器切换“{group_name}”至“{node_name}”"),
+        &format!("已通过 Mihomo 控制器切换“{group_name}”至“{node_name}”并断开相关旧连接"),
     );
     Ok(refresh_runtime_data(snapshot).await)
 }
@@ -1033,6 +1058,8 @@ fn map_rule_type(rule_type: &str) -> String {
         "ipcidr" | "ip-cidr" | "ip-cidr6" => "IP-CIDR",
         "ruleset" | "rule-set" => "RULE-SET",
         "geoip" => "GEOIP",
+        "processname" | "process-name" => "PROCESS-NAME",
+        "processpath" | "process-path" => "PROCESS-PATH",
         _ => "MATCH",
     }
     .into()
@@ -1047,8 +1074,19 @@ fn stable_id(prefix: &str, value: &str) -> String {
     format!("{prefix}-{hash:x}")
 }
 
+const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'!')
+    .remove(b'~')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
 fn encode_component(value: &str) -> String {
-    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+    utf8_percent_encode(value, URI_COMPONENT).to_string()
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -1113,6 +1151,12 @@ mod tests {
             origin: MANAGED_ORIGIN.into(),
             available: true,
         }
+    }
+
+    #[test]
+    fn maps_process_rule_types_from_mihomo() {
+        assert_eq!(map_rule_type("ProcessName"), "PROCESS-NAME");
+        assert_eq!(map_rule_type("PROCESS-PATH"), "PROCESS-PATH");
     }
 
     #[test]

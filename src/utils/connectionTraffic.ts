@@ -5,6 +5,10 @@ export interface ConnectionRate {
   download: number;
 }
 
+export interface ConnectionWithRate extends Connection {
+  realtimeRate: ConnectionRate;
+}
+
 export interface ConnectionTrafficSample {
   sampledAt: number;
   totals: Record<string, ConnectionRate>;
@@ -33,6 +37,21 @@ export function calculateConnectionRates(
   }
 
   return { rates, sample: { sampledAt, totals } };
+}
+
+export function applyConnectionRates(
+  connections: Connection[],
+  rates: Record<string, ConnectionRate>,
+): ConnectionWithRate[] {
+  return connections.map((connection) => ({
+    ...connection,
+    realtimeRate: rates[connection.id] ?? { upload: 0, download: 0 },
+  }));
+}
+
+export function compareConnectionRates(current: ConnectionWithRate, next: ConnectionWithRate): number {
+  return current.realtimeRate.upload + current.realtimeRate.download
+    - next.realtimeRate.upload - next.realtimeRate.download;
 }
 
 export function formatByteRate(bytesPerSecond: number): string {

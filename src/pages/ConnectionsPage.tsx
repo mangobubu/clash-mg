@@ -16,15 +16,17 @@ import { useAppStore } from "../store/useAppStore";
 import type { Connection } from "../types";
 import { isTauriRuntime } from "../utils/tauri";
 import {
+  applyConnectionRates,
   calculateConnectionRates,
+  compareConnectionRates,
   durationToSeconds,
   formatByteRate,
   type ConnectionRate,
   type ConnectionTrafficSample,
+  type ConnectionWithRate,
 } from "../utils/connectionTraffic";
 
 const { Text } = Typography;
-const emptyRate: ConnectionRate = { upload: 0, download: 0 };
 const compareText = (current: string, next: string) => current.localeCompare(next, "zh-CN", { numeric: true, sensitivity: "base" });
 const refreshIntervalOptions = [
   { label: "1 秒", value: 1000 },
@@ -120,6 +122,10 @@ export function ConnectionsPage() {
     && (policy === "all" || connection.policy === policy)
     && (processFilter === "all" || connection.process === processFilter)
     && (!onlyActive || connection.status === "活跃")), [connections, onlyActive, policy, processFilter, protocol, search, status]);
+  const tableConnections = useMemo(
+    () => applyConnectionRates(filtered, connectionRates),
+    [connectionRates, filtered],
+  );
 
   useEffect(() => {
     setPage(1);
@@ -152,7 +158,7 @@ export function ConnectionsPage() {
     }
   };
 
-  const columns: TableColumnsType<Connection> = [
+  const columns: TableColumnsType<ConnectionWithRate> = [
     { title: "应用 / 进程", dataIndex: "app", width: 220, render: (value: string, record) => {
       const processDetail = record.processPath || (record.process !== value ? record.process : "");
       return <Flex gap={10} align="center" className="connection-process"><ProcessIcon app={value} icon={record.icon} /><span className="connection-process-copy"><strong title={value}>{value}</strong>{processDetail && <Text type="secondary" title={processDetail}>{processDetail}</Text>}</span></Flex>;
@@ -160,14 +166,7 @@ export function ConnectionsPage() {
     { title: "目标地址", dataIndex: "target", width: 205, sorter: (current, next) => compareText(`${current.target}${current.ip}`, `${next.target}${next.ip}`), render: (value: string, record) => <span className="stacked-cell"><strong>{value}</strong><Text type="secondary">{record.ip}</Text></span> },
     { title: "协议", dataIndex: "protocol", width: 80, sorter: (current, next) => compareText(current.protocol, next.protocol) },
     { title: "累计上传 / 下载", key: "traffic", width: 190, sorter: (current, next) => current.uploadBytes + current.downloadBytes - next.uploadBytes - next.downloadBytes, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {record.upload}</span><span><i className="traffic-down">↓</i> {record.download}</span></span> },
-    { title: "实时上传 / 下载", key: "realtimeTraffic", width: 210, sorter: (current, next) => {
-      const currentRate = connectionRates[current.id] ?? emptyRate;
-      const nextRate = connectionRates[next.id] ?? emptyRate;
-      return currentRate.upload + currentRate.download - nextRate.upload - nextRate.download;
-    }, render: (_, record) => {
-      const rate = connectionRates[record.id] ?? emptyRate;
-      return <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {formatByteRate(rate.upload)}</span><span><i className="traffic-down">↓</i> {formatByteRate(rate.download)}</span></span>;
-    } },
+    { title: "实时上传 / 下载", key: "realtimeTraffic", width: 210, sorter: compareConnectionRates, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {formatByteRate(record.realtimeRate.upload)}</span><span><i className="traffic-down">↓</i> {formatByteRate(record.realtimeRate.download)}</span></span> },
     { title: "持续时间", dataIndex: "duration", width: 110, sorter: (current, next) => durationToSeconds(current.duration) - durationToSeconds(next.duration) },
     { title: "规则", dataIndex: "rule", width: 120, sorter: (current, next) => compareText(current.rule, next.rule), render: (value: string) => <Tag color={value === "广告拦截" ? "red" : value === "媒体分流" ? "green" : value === "ChatGPT" ? "purple" : "blue"}>{value}</Tag> },
     { title: "策略组", dataIndex: "policy", width: 140, sorter: (current, next) => compareText(current.policy, next.policy) },
@@ -194,10 +193,10 @@ export function ConnectionsPage() {
           <Button icon={<ReloadOutlined />} onClick={() => { setSearch(""); setProtocol("all"); setStatus("all"); setPolicy("all"); setProcessFilter("all"); }} aria-label="重置筛选" />
         </div>
         {selectedIds.length > 0 && <div className="selection-action-bar"><span>已选择 {selectedIds.length} 个连接</span><Button danger size="small" icon={<CloseCircleOutlined />} onClick={() => void closeItems(selectedIds)}>关闭所选连接</Button></div>}
-        <Table<Connection>
+        <Table<ConnectionWithRate>
           rowKey="id"
           columns={columns}
-          dataSource={filtered}
+          dataSource={tableConnections}
           scroll={{ x: 1670 }}
           rowSelection={{ selectedRowKeys: selectedIds, onChange: (keys) => setSelectedIds(keys.map(String)) }}
           pagination={{

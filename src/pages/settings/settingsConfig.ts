@@ -147,7 +147,6 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "showStatusFooter", label: "显示底部状态信息", control: "switch" },
       ] },
       { title: "窗口与交互", fields: [
-        { key: "closeToTray", label: "关闭到托盘", control: "switch" },
         { key: "uiAnimation", label: "启用界面动画", control: "switch" },
         { key: "minimizeToTray", label: "最小化到托盘", control: "switch" },
         { key: "operationHints", label: "显示操作提示", control: "switch" },

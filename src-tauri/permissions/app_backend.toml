@@ -1,6 +1,6 @@
 [[permission]]
 identifier = "allow-app-backend"
-description = "允许前端读写本地应用数据，并通过 Rust 后端访问 Mihomo 外部控制器。"
+description = "允许前端读写本地应用数据、读取运行进程，并通过 Rust 后端访问 Mihomo 外部控制器。"
 commands.allow = [
   "get_app_snapshot",
   "save_app_snapshot",
@@ -15,5 +15,9 @@ commands.allow = [
   "get_mihomo_core_status",
   "download_mihomo_core",
   "start_mihomo_core",
+  "get_tun_service_status",
+  "install_tun_service",
+  "uninstall_tun_service",
+  "list_running_processes",
   "get_lan_ip",
 ]

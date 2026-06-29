@@ -98,7 +98,6 @@ pub fn default_settings() -> SettingsMap {
         ("cardSpacing".into(), json!("标准")),
         ("listDensity".into(), json!("舒适")),
         ("showStatusFooter".into(), json!(true)),
-        ("closeToTray".into(), json!(true)),
         ("minimizeToTray".into(), json!(false)),
         ("showTrayIcon".into(), json!(true)),
         ("uiAnimation".into(), json!(true)),

@@ -4,17 +4,23 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod app_icon;
 mod core;
+mod core_log;
 mod defaults;
 mod mihomo;
 mod models;
+mod running_process;
 mod storage;
 mod subscription;
 mod system_proxy;
+mod tray;
+mod tun_service;
 
 use models::{
     AppSnapshot, ConnectionRefreshResult, DelayResult, LocalSubscriptionRefreshResult, ProxyNode,
     SettingsMap,
 };
+
+pub use tun_service::try_run_cli as try_run_tun_service_cli;
 
 const CONNECTIONS_WINDOW_LABEL: &str = "connections-window";
 
@@ -174,7 +180,8 @@ async fn refresh_runtime_data(
     snapshot: AppSnapshot,
 ) -> Result<AppSnapshot, String> {
     let snapshot = subscription::enrich_runtime_nodes(&app, snapshot)?;
-    let refreshed = mihomo::refresh_runtime_data(snapshot).await;
+    let mut refreshed = mihomo::refresh_runtime_data(snapshot).await;
+    core::merge_core_failure_logs(&app, &mut refreshed);
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
@@ -291,6 +298,44 @@ async fn start_mihomo_core(
     Ok(result)
 }
 
+#[tauri::command]
+fn get_tun_service_status(app: tauri::AppHandle) -> Result<tun_service::TunServiceStatus, String> {
+    tun_service::status(&app)
+}
+
+#[tauri::command]
+async fn install_tun_service(
+    app: tauri::AppHandle,
+) -> Result<tun_service::TunServiceStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || tun_service::install(&app))
+        .await
+        .map_err(|error| format!("安装 TUN 系统服务任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn uninstall_tun_service(
+    app: tauri::AppHandle,
+) -> Result<tun_service::TunServiceStatus, String> {
+    let mut snapshot = storage::load_snapshot(&app)?;
+    if setting_bool(&snapshot.settings, "tunMode", false) {
+        snapshot
+            .settings
+            .insert("tunMode".into(), serde_json::Value::Bool(false));
+        let _ = core::sync_runtime_config(&app, &snapshot).await;
+        storage::save_snapshot(&app, &snapshot)?;
+    }
+    tauri::async_runtime::spawn_blocking(move || tun_service::uninstall(&app))
+        .await
+        .map_err(|error| format!("删除 TUN 系统服务任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn list_running_processes() -> Result<Vec<running_process::RunningProcess>, String> {
+    tauri::async_runtime::spawn_blocking(running_process::list)
+        .await
+        .map_err(|error| format!("读取运行进程任务失败：{error}"))?
+}
+
 fn setting_bool(settings: &SettingsMap, key: &str, fallback: bool) -> bool {
     settings
         .get(key)
@@ -322,16 +367,31 @@ fn get_lan_ip() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            tray::setup(app.handle())?;
+            Ok(())
+        })
         .on_window_event(|window, event| {
-            if window.label() == "main"
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
-            {
+            if window.label() == "main" {
+                let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                    return;
+                };
+
                 for (label, secondary_window) in window.app_handle().webview_windows() {
                     if label != "main" {
                         if let Err(error) = secondary_window.destroy() {
                             eprintln!("销毁子窗口“{label}”失败：{error}");
                         }
                     }
+                }
+
+                if tray::should_minimize_on_close(window.app_handle()) {
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!("隐藏主窗口失败：{error}");
+                    }
+                } else {
+                    window.app_handle().exit(0);
                 }
             }
         })
@@ -351,6 +411,10 @@ pub fn run() {
             get_mihomo_core_status,
             download_mihomo_core,
             start_mihomo_core,
+            get_tun_service_status,
+            install_tun_service,
+            uninstall_tun_service,
+            list_running_processes,
             get_lan_ip
         ])
         .run(tauri::generate_context!())

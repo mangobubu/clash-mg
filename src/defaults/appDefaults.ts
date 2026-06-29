@@ -76,7 +76,6 @@ export const defaultSettings: AppSettings = {
   cardSpacing: "标准",
   listDensity: "舒适",
   showStatusFooter: true,
-  closeToTray: true,
   minimizeToTray: false,
   showTrayIcon: true,
   uiAnimation: true,

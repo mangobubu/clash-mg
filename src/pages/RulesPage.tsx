@@ -13,6 +13,7 @@ import {
   ExperimentOutlined,
 } from "@ant-design/icons";
 import {
+  AutoComplete,
   Button,
   Dropdown,
   Flex,
@@ -30,9 +31,11 @@ import {
 } from "antd";
 import type { TableColumnsType } from "antd";
 import { PageHeader, Panel, StatusDot } from "../components/Common";
+import { listRunningProcesses } from "../backend/api";
 import { useAppStore } from "../store/useAppStore";
-import type { RoutingRule, RuleOrigin, RuleType } from "../types";
+import type { RoutingRule, RuleOrigin, RuleType, RunningProcess } from "../types";
 import { getRulePolicyNames } from "../utils/proxyGroups";
+import { getRunningProcessOptions } from "../utils/runningProcesses";
 
 const { Text } = Typography;
 
@@ -82,8 +85,12 @@ const typeColor: Record<RuleType, string> = {
   "IP-CIDR": "geekblue",
   "RULE-SET": "blue",
   GEOIP: "green",
+  "PROCESS-NAME": "magenta",
+  "PROCESS-PATH": "volcano",
   MATCH: "default",
 };
+
+const processRuleTypes = new Set<RuleType>(["PROCESS-NAME", "PROCESS-PATH"]);
 
 type RuleSourceFilter = RuleOrigin | "all";
 
@@ -111,10 +118,14 @@ export function RulesPage() {
   const [editing, setEditing] = useState<RoutingRule | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [runningProcesses, setRunningProcesses] = useState<RunningProcess[]>([]);
+  const [processesLoading, setProcessesLoading] = useState(false);
   const draggedRuleIdRef = useRef<string | null>(null);
   const [form] = Form.useForm<RuleFormValues>();
+  const selectedRuleType = Form.useWatch("type", form);
   const {
     groups,
+    connections,
     rules,
     ruleOverrides,
     addRule,
@@ -128,11 +139,30 @@ export function RulesPage() {
     () => getRulePolicyNames(groups).map((value) => ({ label: value, value })),
     [groups],
   );
+  const processOptions = useMemo(() => {
+    return getRunningProcessOptions(
+      runningProcesses,
+      connections,
+      selectedRuleType,
+    );
+  }, [connections, runningProcesses, selectedRuleType]);
+  const isProcessRule = processRuleTypes.has(selectedRuleType);
   const isRuleOverridden = (rule: RoutingRule) => ruleOverrides.some((item) =>
     item.targetType === rule.type && item.targetContent === rule.content);
   const saveRuleState = (target: RoutingRule, next: RoutingRule) => {
     if (getRuleOrigin(target.source) === "managed") setRuleOverride(target, next);
     else updateRule(next);
+  };
+
+  const loadRunningProcessOptions = async () => {
+    setProcessesLoading(true);
+    try {
+      setRunningProcesses(await listRunningProcesses());
+    } catch (error) {
+      message.error(`读取运行进程失败：${String(error)}`);
+    } finally {
+      setProcessesLoading(false);
+    }
   };
 
   const filtered = useMemo(
@@ -176,6 +206,7 @@ export function RulesPage() {
       noResolve: rule.noResolve,
       wildcard: rule.wildcard,
     });
+    if (processRuleTypes.has(rule.type)) void loadRunningProcessOptions();
     setModalOpen(true);
   };
 
@@ -373,6 +404,9 @@ export function RulesPage() {
         }
       />
       <Panel className="rules-panel">
+        <div className="hint-bar">
+          规则按照列表顺序从上到下匹配，命中后不再检查后续规则；拖动左侧图标可调整优先级。
+        </div>
         <div className="filter-bar rules-filter-bar">
           <Input
             prefix={<SearchOutlined />}
@@ -463,6 +497,10 @@ export function RulesPage() {
               >
                 <Select
                   disabled={editing ? getRuleOrigin(editing.source) === "managed" : false}
+                  onChange={(value: RuleType) => {
+                    form.setFieldValue("content", "");
+                    if (processRuleTypes.has(value)) void loadRunningProcessOptions();
+                  }}
                   options={Object.keys(typeColor).map((value) => ({
                     label: value,
                     value,
@@ -470,11 +508,55 @@ export function RulesPage() {
                 />
               </Form.Item>
               <Form.Item
-                label="规则内容"
+                label={isProcessRule ? "选择进程" : "规则内容"}
                 name="content"
-                rules={[{ required: true, message: "请输入规则内容" }]}
+                rules={[
+                  {
+                    required: true,
+                    message: isProcessRule
+                      ? "请选择或输入进程"
+                      : "请输入规则内容",
+                  },
+                ]}
               >
-                <Input disabled={editing ? getRuleOrigin(editing.source) === "managed" : false} placeholder="例如：openai.com" />
+                {isProcessRule ? (
+                  <AutoComplete
+                    disabled={editing ? getRuleOrigin(editing.source) === "managed" : false}
+                    options={processOptions}
+                    filterOption={(inputValue, option) =>
+                      `${String(option?.value ?? "")}${String(option?.label ?? "")}`
+                        .toLowerCase()
+                        .includes(inputValue.toLowerCase())
+                    }
+                  >
+                    <Input
+                      placeholder={
+                        selectedRuleType === "PROCESS-PATH"
+                          ? "选择或输入完整进程路径"
+                          : "选择或输入进程名，例如：chrome.exe"
+                      }
+                      suffix={
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ReloadOutlined />}
+                          loading={processesLoading}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void loadRunningProcessOptions();
+                          }}
+                          aria-label="刷新运行进程"
+                          title="刷新运行进程"
+                        />
+                      }
+                    />
+                  </AutoComplete>
+                ) : (
+                  <Input
+                    disabled={editing ? getRuleOrigin(editing.source) === "managed" : false}
+                    placeholder="例如：openai.com"
+                  />
+                )}
               </Form.Item>
               <Form.Item
                 label="策略组"

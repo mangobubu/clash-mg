@@ -5,6 +5,7 @@ import zhCN from "antd/locale/zh_CN";
 import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { MihomoCoreBootstrap } from "./components/MihomoCoreBootstrap";
+import { TunServiceProvider } from "./components/TunServiceControl";
 import { useAppStore } from "./store/useAppStore";
 import { isTauriRuntime } from "./utils/tauri";
 
@@ -132,27 +133,29 @@ export default function App() {
       }}
     >
       <AntApp>
-        {!isStandaloneWindow && <MihomoCoreBootstrap />}
-        <HashRouter>
-          <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>
-            {!hydrated ? <div className="route-loading"><Spin size="large" /></div> : <Routes>
-              <Route path="connections-window" element={<div className="standalone-window-page"><ConnectionsPage /></div>} />
-              <Route path="connection-detail/:id" element={<ConnectionDetailWindowPage />} />
-              <Route element={<AppShell />}>
-                <Route index element={<DashboardPage />} />
-                <Route path="proxies" element={<ProxiesPage />} />
-                <Route path="nodes" element={<NodesPage />} />
-                <Route path="subscriptions" element={<SubscriptionsPage />} />
-                <Route path="rules" element={<RulesPage />} />
-                <Route path="connections" element={<ConnectionsRoute />} />
-                <Route path="logs" element={<LogsPage />} />
-                <Route path="settings/:section" element={<SettingsPage />} />
-                <Route path="settings" element={<Navigate to="/settings/general" replace />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Route>
-            </Routes>}
-          </Suspense>
-        </HashRouter>
+        <TunServiceProvider>
+          {!isStandaloneWindow && <MihomoCoreBootstrap />}
+          <HashRouter>
+            <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>
+              {!hydrated ? <div className="route-loading"><Spin size="large" /></div> : <Routes>
+                <Route path="connections-window" element={<div className="standalone-window-page"><ConnectionsPage /></div>} />
+                <Route path="connection-detail/:id" element={<ConnectionDetailWindowPage />} />
+                <Route element={<AppShell />}>
+                  <Route index element={<DashboardPage />} />
+                  <Route path="proxies" element={<ProxiesPage />} />
+                  <Route path="nodes" element={<NodesPage />} />
+                  <Route path="subscriptions" element={<SubscriptionsPage />} />
+                  <Route path="rules" element={<RulesPage />} />
+                  <Route path="connections" element={<ConnectionsRoute />} />
+                  <Route path="logs" element={<LogsPage />} />
+                  <Route path="settings/:section" element={<SettingsPage />} />
+                  <Route path="settings" element={<Navigate to="/settings/general" replace />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Route>
+              </Routes>}
+            </Suspense>
+          </HashRouter>
+        </TunServiceProvider>
       </AntApp>
     </ConfigProvider>
   );

@@ -8,6 +8,8 @@ import type {
   LocalSubscriptionRefreshResult,
   MihomoCoreLaunchResult,
   MihomoCoreStatus,
+  RunningProcess,
+  TunServiceStatus,
 } from "../types";
 import { isTauriRuntime } from "../utils/tauri";
 
@@ -110,6 +112,28 @@ export async function downloadMihomoCore(): Promise<MihomoCoreStatus> {
 export async function startMihomoCore(settings: AppSettings): Promise<MihomoCoreLaunchResult> {
   if (!(await isTauriRuntime())) return { started: false, controllerReady: false, message: "浏览器预览环境无法启动 Mihomo 内核" };
   return invoke<MihomoCoreLaunchResult>("start_mihomo_core", { settings });
+}
+
+export async function getTunServiceStatus(): Promise<TunServiceStatus> {
+  if (!(await isTauriRuntime())) {
+    return { installed: false, running: false, versionCompatible: false, message: "浏览器预览环境无法访问系统服务" };
+  }
+  return invoke<TunServiceStatus>("get_tun_service_status");
+}
+
+export async function installTunService(): Promise<TunServiceStatus> {
+  if (!(await isTauriRuntime())) throw new Error("浏览器预览环境无法安装系统服务");
+  return invoke<TunServiceStatus>("install_tun_service");
+}
+
+export async function uninstallTunService(): Promise<TunServiceStatus> {
+  if (!(await isTauriRuntime())) throw new Error("浏览器预览环境无法删除系统服务");
+  return invoke<TunServiceStatus>("uninstall_tun_service");
+}
+
+export async function listRunningProcesses(): Promise<RunningProcess[]> {
+  if (!(await isTauriRuntime())) return [];
+  return invoke<RunningProcess[]>("list_running_processes");
 }
 
 function loadBrowserSnapshot() {

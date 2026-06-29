@@ -43,7 +43,7 @@ export function ConnectionsPage() {
   const [processFilter, setProcessFilter] = useState("all");
   const [onlyActive, setOnlyActive] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [refreshInterval, setRefreshInterval] = useState(3000);
+  const [refreshInterval, setRefreshInterval] = useState(1000);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -149,7 +149,7 @@ export function ConnectionsPage() {
   const openConnectionDetail = async (connection: Connection) => {
     try {
       await invoke("open_connection_detail_window", {
-        id: connection.id,
+        connection,
         title: `连接详情 - ${connection.app}`,
       });
     } catch (error) {
@@ -159,19 +159,18 @@ export function ConnectionsPage() {
   };
 
   const columns: TableColumnsType<ConnectionWithRate> = [
-    { title: "应用 / 进程", dataIndex: "app", width: 220, render: (value: string, record) => {
+    { title: "应用 / 进程", dataIndex: "app", width: 185, render: (value: string, record) => {
       const processDetail = record.processPath || (record.process !== value ? record.process : "");
       return <Flex gap={10} align="center" className="connection-process"><ProcessIcon app={value} icon={record.icon} /><span className="connection-process-copy"><strong title={value}>{value}</strong>{processDetail && <Text type="secondary" title={processDetail}>{processDetail}</Text>}</span></Flex>;
     }, sorter: (current, next) => compareText(`${current.app}${current.process}`, `${next.app}${next.process}`) },
-    { title: "目标地址", dataIndex: "target", width: 205, sorter: (current, next) => compareText(`${current.target}${current.ip}`, `${next.target}${next.ip}`), render: (value: string, record) => <span className="stacked-cell"><strong>{value}</strong><Text type="secondary">{record.ip}</Text></span> },
-    { title: "协议", dataIndex: "protocol", width: 80, sorter: (current, next) => compareText(current.protocol, next.protocol) },
-    { title: "累计上传 / 下载", key: "traffic", width: 190, sorter: (current, next) => current.uploadBytes + current.downloadBytes - next.uploadBytes - next.downloadBytes, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {record.upload}</span><span><i className="traffic-down">↓</i> {record.download}</span></span> },
-    { title: "实时上传 / 下载", key: "realtimeTraffic", width: 210, sorter: compareConnectionRates, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {formatByteRate(record.realtimeRate.upload)}</span><span><i className="traffic-down">↓</i> {formatByteRate(record.realtimeRate.download)}</span></span> },
-    { title: "持续时间", dataIndex: "duration", width: 110, sorter: (current, next) => durationToSeconds(current.duration) - durationToSeconds(next.duration) },
-    { title: "规则", dataIndex: "rule", width: 120, sorter: (current, next) => compareText(current.rule, next.rule), render: (value: string) => <Tag color={value === "广告拦截" ? "red" : value === "媒体分流" ? "green" : value === "ChatGPT" ? "purple" : "blue"}>{value}</Tag> },
-    { title: "策略组", dataIndex: "policy", width: 140, sorter: (current, next) => compareText(current.policy, next.policy) },
-    { title: "出口 / 物理入口", dataIndex: "node", width: 190, sorter: (current, next) => compareText(`${current.node}${current.entryNode}`, `${next.node}${next.entryNode}`), render: (value: string, record) => <span className="stacked-cell"><strong title={value}>{value}</strong>{record.entryNode && <Text type="secondary" title={record.entryNode}>入口：{record.entryNode}</Text>}</span> },
-    { title: "状态", dataIndex: "status", width: 90, sorter: (current, next) => compareText(current.status, next.status), render: (value: Connection["status"]) => <StatusDot status={value === "活跃" ? "success" : "default"}>{value}</StatusDot> },
+    { title: "目标地址", dataIndex: "target", width: 190, sorter: (current, next) => compareText(`${current.target}${current.ip}`, `${next.target}${next.ip}`), render: (value: string, record) => <span className="stacked-cell"><strong title={value}>{value}</strong><Text type="secondary" title={record.ip}>{record.ip}</Text></span> },
+    { title: "协议", dataIndex: "protocol", width: 65, sorter: (current, next) => compareText(current.protocol, next.protocol) },
+    { title: "累计流量", key: "traffic", width: 145, sorter: (current, next) => current.uploadBytes + current.downloadBytes - next.uploadBytes - next.downloadBytes, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {record.upload}</span><span><i className="traffic-down">↓</i> {record.download}</span></span> },
+    { title: "实时速度", key: "realtimeTraffic", width: 145, sorter: compareConnectionRates, render: (_, record) => <span className="connection-traffic-cell"><span><i className="traffic-up">↑</i> {formatByteRate(record.realtimeRate.upload)}</span><span><i className="traffic-down">↓</i> {formatByteRate(record.realtimeRate.download)}</span></span> },
+    { title: "持续时间", dataIndex: "duration", width: 90, sorter: (current, next) => durationToSeconds(current.duration) - durationToSeconds(next.duration) },
+    { title: "路由", key: "route", width: 145, sorter: (current, next) => compareText(`${current.rule}${current.policy}`, `${next.rule}${next.policy}`), render: (_, record) => <span className="stacked-cell connection-route-cell"><Tag color={record.rule === "广告拦截" ? "red" : record.rule === "媒体分流" ? "green" : record.rule === "ChatGPT" ? "purple" : "blue"}>{record.rule}</Tag><Text type="secondary" title={record.policy}>{record.policy}</Text></span> },
+    { title: "出口 / 入口", dataIndex: "node", width: 165, sorter: (current, next) => compareText(`${current.node}${current.entryNode}`, `${next.node}${next.entryNode}`), render: (value: string, record) => <span className="stacked-cell"><strong title={value}>{value}</strong>{record.entryNode && <Text type="secondary" title={record.entryNode}>入口：{record.entryNode}</Text>}</span> },
+    { title: "状态", dataIndex: "status", width: 80, sorter: (current, next) => compareText(current.status, next.status), render: (value: Connection["status"]) => <StatusDot status={value === "活跃" ? "success" : "default"}>{value}</StatusDot> },
     { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, record) => <Space><Button icon={<EyeOutlined />} onClick={() => void openConnectionDetail(record)} aria-label="查看详情" /><Button icon={<CloseCircleOutlined />} disabled={record.status === "已关闭"} onClick={() => void closeItems([record.id])} aria-label="关闭连接" /></Space> },
   ];
 
@@ -179,25 +178,32 @@ export function ConnectionsPage() {
     <div className="page-stack connections-page">
       <PageHeader title="连接" description="查看与管理当前网络连接，分析流量去向与命中规则。" actions={<><Button icon={<ReloadOutlined />} onClick={() => { void refreshRuntimeData(); message.success("已请求刷新连接列表"); }}>刷新</Button><Button type="primary" icon={<DeleteOutlined />} onClick={() => { clearClosedConnections(); message.success("已清理关闭的连接"); }}>清理关闭连接</Button></>} />
       <Panel className="connections-panel">
-        <div className="filter-bar connection-filter-bar">
-          <Input prefix={<SearchOutlined />} placeholder="搜索目标域名 / IP / 进程" value={search} onChange={(event) => setSearch(event.target.value)} allowClear />
-          <Select value={protocol} onChange={setProtocol} options={[{ label: "所有协议", value: "all" }, { label: "TCP", value: "TCP" }, { label: "UDP", value: "UDP" }]} />
-          <Select value={status} onChange={setStatus} options={[{ label: "所有状态", value: "all" }, { label: "活跃", value: "活跃" }, { label: "已关闭", value: "已关闭" }]} />
-          <Select value={policy} onChange={setPolicy} options={[{ label: "所有策略组", value: "all" }, ...Array.from(new Set(connections.map((connection) => connection.policy))).map((value) => ({ label: value, value }))]} />
-          <Select value={processFilter} onChange={setProcessFilter} options={processOptions} />
-          <Flex gap={8} align="center" className="filter-switch"><Text>仅显示活跃</Text><Switch checked={onlyActive} onChange={setOnlyActive} /></Flex>
-          <Flex gap={8} align="center" className="connection-refresh-controls">
-            <Checkbox checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)}>自动刷新</Checkbox>
-            <Select className="connection-refresh-interval" value={refreshInterval} onChange={setRefreshInterval} options={refreshIntervalOptions} disabled={!autoRefresh} aria-label="自动刷新间隔" />
-          </Flex>
-          <Button icon={<ReloadOutlined />} onClick={() => { setSearch(""); setProtocol("all"); setStatus("all"); setPolicy("all"); setProcessFilter("all"); }} aria-label="重置筛选" />
+        <div className="connection-filter-bar">
+          <div className="connection-filter-primary">
+            <Input prefix={<SearchOutlined />} placeholder="搜索目标域名 / IP / 进程" value={search} onChange={(event) => setSearch(event.target.value)} allowClear />
+            <Select value={protocol} onChange={setProtocol} options={[{ label: "所有协议", value: "all" }, { label: "TCP", value: "TCP" }, { label: "UDP", value: "UDP" }]} />
+            <Select value={status} onChange={setStatus} options={[{ label: "所有状态", value: "all" }, { label: "活跃", value: "活跃" }, { label: "已关闭", value: "已关闭" }]} />
+            <Select value={policy} onChange={setPolicy} options={[{ label: "所有策略组", value: "all" }, ...Array.from(new Set(connections.map((connection) => connection.policy))).map((value) => ({ label: value, value }))]} />
+            <Select value={processFilter} onChange={setProcessFilter} options={processOptions} />
+          </div>
+          <div className="connection-filter-secondary">
+            <Text className="connection-filter-summary">当前 <strong>{filtered.length}</strong> 个{onlyActive ? "活跃" : ""}连接</Text>
+            <Flex gap={22} align="center" wrap="wrap" justify="flex-end">
+              <Flex gap={8} align="center" className="filter-switch"><Text>仅显示活跃</Text><Switch checked={onlyActive} onChange={setOnlyActive} /></Flex>
+              <Flex gap={8} align="center" className="connection-refresh-controls">
+                <Checkbox checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)}>自动刷新</Checkbox>
+                <Select className="connection-refresh-interval" value={refreshInterval} onChange={setRefreshInterval} options={refreshIntervalOptions} disabled={!autoRefresh} aria-label="自动刷新间隔" />
+              </Flex>
+              <Button icon={<ReloadOutlined />} onClick={() => { setSearch(""); setProtocol("all"); setStatus("all"); setPolicy("all"); setProcessFilter("all"); }} aria-label="重置筛选" />
+            </Flex>
+          </div>
         </div>
         {selectedIds.length > 0 && <div className="selection-action-bar"><span>已选择 {selectedIds.length} 个连接</span><Button danger size="small" icon={<CloseCircleOutlined />} onClick={() => void closeItems(selectedIds)}>关闭所选连接</Button></div>}
         <Table<ConnectionWithRate>
           rowKey="id"
           columns={columns}
           dataSource={tableConnections}
-          scroll={{ x: 1670 }}
+          scroll={{ x: 1310, y: "calc(100vh - 390px)" }}
           rowSelection={{ selectedRowKeys: selectedIds, onChange: (keys) => setSelectedIds(keys.map(String)) }}
           pagination={{
             current: page,

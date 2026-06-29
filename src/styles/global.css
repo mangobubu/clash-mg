@@ -136,12 +136,13 @@ img, svg {
 .sidebar .ant-menu-item-selected { border: 1px solid color-mix(in srgb, var(--accent) 75%, #1677ff); background: linear-gradient(100deg, color-mix(in srgb, var(--accent) 9%, transparent), color-mix(in srgb, #1677ff 5%, transparent)) !important; color: var(--text); }
 .sidebar .ant-menu-item-selected .anticon { color: var(--accent); }
 .sidebar-spacer { flex: 1; }
-.core-status { min-height: 202px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--panel); padding: 18px 14px; box-shadow: var(--shadow); }
-.core-status dl { display: flex; justify-content: space-between; margin: 0 0 12px; color: var(--muted); }
-.core-status dt, .core-status dd { margin: 0; }
-.core-status dd { color: var(--muted); text-align: right; }
-.core-status .ant-divider { margin: 22px 0; border-color: var(--border-color); }
-.latest-version { text-align: center; }
+.runtime-metrics { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--panel); box-shadow: var(--shadow); }
+.runtime-metric { min-width: 0; min-height: 38px; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 8px; padding: 4px 7px; border-radius: 8px; background: var(--panel-soft); font-variant-numeric: tabular-nums; }
+.runtime-metric-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; font-size: 17px; }
+.runtime-metric strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-metric-upload .runtime-metric-icon { color: #f04438; background: color-mix(in srgb, #f04438 11%, transparent); }
+.runtime-metric-download .runtime-metric-icon { color: var(--green); background: color-mix(in srgb, var(--green) 11%, transparent); }
+.runtime-metric-memory .runtime-metric-icon { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
 .sidebar-collapsed .sidebar { padding-inline: 10px; }
 .sidebar-collapsed .sidebar-brand { justify-content: center; }
 .sidebar-collapsed .sidebar-brand .app-logo { width: 100%; justify-content: center; }
@@ -157,8 +158,9 @@ img, svg {
   line-height: 1;
 }
 .sidebar-collapsed .sidebar .ant-menu-title-content { display: none; }
-.sidebar-collapsed .core-status { min-height: 58px; display: grid; place-items: center; padding: 0; }
-.core-dot { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 12%, transparent); }
+.sidebar-collapsed .runtime-metrics { gap: 6px; padding: 7px 5px; }
+.sidebar-collapsed .runtime-metric { min-height: 34px; grid-template-columns: 1fr; place-items: center; padding: 2px; }
+.sidebar-collapsed .runtime-metric strong { display: none; }
 .topbar { grid-column: 2; display: flex; justify-content: flex-end; align-items: center; gap: 14px; padding: 14px 20px 10px; user-select: none; }
 .global-search-trigger { width: 325px; height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: var(--muted); border: 1px solid var(--border-color); border-radius: 11px; background: var(--panel); cursor: pointer; transition: border-color 150ms ease, box-shadow 150ms ease; }
 .global-search-trigger:hover { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -191,7 +193,7 @@ img, svg {
 
 /* 通用布局 */
 .page-stack { width: 100%; max-width: 1540px; min-height: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
-.standalone-window-page { height: 100%; overflow: auto; padding: 24px; background: var(--page-bg); }
+.standalone-window-page { height: 100%; overflow: hidden; padding: 18px 20px; background: var(--page-bg); }
 .page-header { min-height: 82px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 8px 4px 14px; }
 .page-header h2 { margin: 0 0 6px !important; font-size: 27px; line-height: 1.2; }
 .panel { border: 1px solid var(--border-color); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); padding: 18px; }
@@ -425,7 +427,11 @@ img, svg {
 .rule-preview code { flex: 1; overflow: hidden; text-overflow: ellipsis; color: #4767aa; }
 
 /* 连接与日志 */
-.connection-filter-bar { grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(130px, .65fr)) auto minmax(190px, auto) auto; }
+.connection-filter-bar { display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+.connection-filter-primary { display: grid; grid-template-columns: minmax(280px, 1.5fr) repeat(4, minmax(128px, .65fr)); gap: 10px; }
+.connection-filter-secondary { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.connection-filter-summary { white-space: nowrap; }
+.connection-filter-summary strong { color: var(--blue); font-size: 16px; }
 .connection-refresh-controls { white-space: nowrap; }
 .connection-refresh-interval { width: 100px; }
 .app-process-icon { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 38px; overflow: hidden; border-radius: 50%; background: var(--panel-soft); font-size: 22px; }
@@ -433,9 +439,20 @@ img, svg {
 .connection-process { min-width: 0; }
 .connection-process-copy { min-width: 0; display: flex; flex-direction: column; }
 .connection-process-copy strong, .connection-process-copy .ant-typography { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.connection-traffic-cell { display: inline-flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.connection-traffic-cell { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .connection-traffic-cell > span { white-space: nowrap; }
 .traffic-down { color: var(--green); font-style: normal; }.traffic-up { color: var(--blue); font-style: normal; }
+.connections-page { min-height: 0; }
+.standalone-window-page .connections-page { height: 100%; }
+.connections-page .page-header { min-height: 72px; padding-top: 2px; padding-bottom: 8px; }
+.connections-page .page-header h2 { font-size: 25px; }
+.connections-panel { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 14px 16px; overflow: hidden; }
+.connections-panel .ant-table-wrapper { min-height: 0; flex: 1; }
+.connections-panel .ant-table { font-size: 13px; }
+.connections-panel .ant-table-tbody > tr > td { padding-top: 10px; padding-bottom: 10px; }
+.connection-route-cell { min-width: 0; }
+.connection-route-cell .ant-tag { align-self: flex-start; max-width: 100%; margin-inline-end: 0; overflow: hidden; text-overflow: ellipsis; }
+.connection-route-cell .ant-typography { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .connections-page .ant-table-container { isolation: isolate; }
 .connections-page .ant-table-thead > tr > th.ant-table-cell-fix-end {
   z-index: 4;
@@ -510,8 +527,9 @@ img, svg {
   .quick-toggles { gap: 10px; }
   .quick-toggle { grid-template-columns: 42px 1fr auto; padding: 12px; }.quick-icon { width: 42px; height: 42px; }
   .filter-bar { gap: 8px; }
-  .rules-filter-bar, .connection-filter-bar, .logs-filter-bar { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
-  .rules-filter-bar > :first-child, .connection-filter-bar > :first-child, .logs-filter-bar > :first-child { grid-column: span 2; }
+  .rules-filter-bar, .logs-filter-bar { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
+  .rules-filter-bar > :first-child, .logs-filter-bar > :first-child { grid-column: span 2; }
+  .connection-filter-primary { grid-template-columns: minmax(250px, 1.4fr) repeat(4, minmax(118px, .65fr)); }
 }
 
 @media (max-width: 1180px) {
@@ -549,6 +567,9 @@ img, svg {
   .nodes-overview, .nodes-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .nodes-filter-bar { grid-template-columns: 1fr 1fr; }
   .nodes-filter-bar > :first-child { grid-column: span 2; }
+  .connection-filter-primary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .connection-filter-primary > :first-child { grid-column: span 2; }
+  .connection-filter-secondary { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 620px) {

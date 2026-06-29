@@ -1,10 +1,12 @@
 import { CloseCircleOutlined, CloseOutlined } from "@ant-design/icons";
-import { Button, Descriptions, Empty, Flex, Tag, Typography, message } from "antd";
-import { useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Button, Descriptions, Empty, Flex, Spin, Tag, Typography, message } from "antd";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { PageHeader, Panel, StatusDot } from "../components/Common";
 import { ProcessIcon } from "../components/ProcessIcon";
 import { useAppStore } from "../store/useAppStore";
+import type { Connection } from "../types";
 import { isTauriRuntime } from "../utils/tauri";
 
 const { Text, Title } = Typography;
@@ -21,8 +23,35 @@ async function closeCurrentDetailWindow() {
 
 export function ConnectionDetailWindowPage() {
   const { id } = useParams();
+  const [connectionSnapshot, setConnectionSnapshot] = useState<Connection>();
+  const [snapshotLoaded, setSnapshotLoaded] = useState(false);
   const { connections, closeConnections } = useAppStore();
-  const connection = useMemo(() => connections.find((item) => item.id === id), [connections, id]);
+  const connection = useMemo(
+    () => connectionSnapshot ?? connections.find((item) => item.id === id),
+    [connectionSnapshot, connections, id],
+  );
+
+  useEffect(() => {
+    let mounted = true;
+
+    if (!id) {
+      setSnapshotLoaded(true);
+      return;
+    }
+
+    void invoke<Connection | null>("get_connection_detail_snapshot", { id })
+      .then((snapshot) => {
+        if (mounted && snapshot) setConnectionSnapshot(snapshot);
+      })
+      .catch((error) => console.error("连接详情快照读取失败", error))
+      .finally(() => {
+        if (mounted) setSnapshotLoaded(true);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [id]);
 
   const closeWindow = () => {
     void closeCurrentDetailWindow().catch(() => {
@@ -39,6 +68,10 @@ export function ConnectionDetailWindowPage() {
       message.error(`终止连接失败：${String(error)}`);
     }
   };
+
+  if (!connection && !snapshotLoaded) {
+    return <div className="route-loading"><Spin size="large" /></div>;
+  }
 
   if (!connection) {
     return (

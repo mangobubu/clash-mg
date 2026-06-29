@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ApartmentOutlined,
   AppstoreOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   BellOutlined,
   CloudDownloadOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
   FileTextOutlined,
   HomeOutlined,
   LeftOutlined,
@@ -16,12 +19,14 @@ import {
   SunOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
-import { Button, Divider, Flex, Input, List, Menu, Modal, Popover, Segmented, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Flex, Input, List, Menu, Modal, Popover, Segmented, Tag, Tooltip, Typography, message } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../store/useAppStore";
 import type { ThemeMode } from "../types";
+import { formatMemoryMegabytes, formatRuntimeByteRate } from "../utils/runtimeMetrics";
 import { isTauriRuntime } from "../utils/tauri";
 import { AppLogo, StatusDot } from "./Common";
+import { useRuntimeMetrics } from "./useRuntimeMetrics";
 
 const { Text } = Typography;
 
@@ -51,8 +56,17 @@ export function AppShell() {
     rules,
     logs,
     activities,
+    settings,
     runtime,
   } = useAppStore();
+  const runtimeMetrics = useRuntimeMetrics({
+    controllerUrl: runtime.controllerUrl,
+    secret: String(settings.uiSecret ?? ""),
+    enabled: runtime.controllerConnected,
+  });
+  const uploadSpeed = formatRuntimeByteRate(runtimeMetrics.uploadBytesPerSecond);
+  const downloadSpeed = formatRuntimeByteRate(runtimeMetrics.downloadBytesPerSecond);
+  const memoryUsage = formatMemoryMegabytes(runtimeMetrics.memoryBytes);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -182,19 +196,25 @@ export function AppShell() {
           onClick={({ key }) => void handleNavigation(String(key))}
         />
         <div className="sidebar-spacer" />
-        <div className="core-status">
-          {sidebarCollapsed ? (
-            <Tooltip title={`${runtime.coreVersion} · ${runtime.controllerConnected ? "已连接" : "未连接"}`}><span className="core-dot" /></Tooltip>
-          ) : (
-            <>
-              <dl><dt>核心</dt><dd><StatusDot status={runtime.controllerConnected ? "success" : "default"}>{runtime.coreVersion}</StatusDot></dd></dl>
-              <dl><dt>控制器</dt><dd>{runtime.controllerUrl}</dd></dl>
-              <dl><dt>下载</dt><dd>{runtime.downloadTotal}</dd></dl>
-              <dl><dt>上传</dt><dd>{runtime.uploadTotal}</dd></dl>
-              <Divider />
-              <div className="latest-version"><StatusDot status={runtime.controllerConnected ? "success" : "default"}>{runtime.controllerConnected ? `同步于 ${runtime.lastSync}` : "等待连接"}</StatusDot></div>
-            </>
-          )}
+        <div className="runtime-metrics" role="group" aria-label="实时运行指标">
+          <Tooltip title={`总上传速度 ${uploadSpeed}`} placement="right">
+            <div className="runtime-metric runtime-metric-upload" aria-label={`总上传速度 ${uploadSpeed}`}>
+              <span className="runtime-metric-icon"><ArrowUpOutlined /></span>
+              <strong>{uploadSpeed}</strong>
+            </div>
+          </Tooltip>
+          <Tooltip title={`总下载速度 ${downloadSpeed}`} placement="right">
+            <div className="runtime-metric runtime-metric-download" aria-label={`总下载速度 ${downloadSpeed}`}>
+              <span className="runtime-metric-icon"><ArrowDownOutlined /></span>
+              <strong>{downloadSpeed}</strong>
+            </div>
+          </Tooltip>
+          <Tooltip title={`内存占用 ${memoryUsage}`} placement="right">
+            <div className="runtime-metric runtime-metric-memory" aria-label={`内存占用 ${memoryUsage}`}>
+              <span className="runtime-metric-icon"><DatabaseOutlined /></span>
+              <strong>{memoryUsage}</strong>
+            </div>
+          </Tooltip>
         </div>
       </aside>
 

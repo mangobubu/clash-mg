@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write, sync::Mutex};
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -23,6 +23,9 @@ use models::{
 pub use tun_service::try_run_cli as try_run_tun_service_cli;
 
 const CONNECTIONS_WINDOW_LABEL: &str = "connections-window";
+
+#[derive(Default)]
+struct ConnectionDetailSnapshots(Mutex<HashMap<String, models::Connection>>);
 
 fn create_connection_window_label(id: &str) -> String {
     let sanitized: String = id
@@ -64,8 +67,8 @@ async fn open_connections_window(app: tauri::AppHandle) -> Result<(), String> {
     let url = WebviewUrl::App("index.html#/connections-window".into());
     let window = WebviewWindowBuilder::new(&app, CONNECTIONS_WINDOW_LABEL, url)
         .title("连接")
-        .inner_size(1180.0, 760.0)
-        .min_inner_size(920.0, 600.0)
+        .inner_size(1480.0, 860.0)
+        .min_inner_size(1100.0, 680.0)
         .center()
         .decorations(true)
         .resizable(true)
@@ -92,9 +95,16 @@ async fn open_connections_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_connection_detail_window(
     app: tauri::AppHandle,
-    id: String,
+    connection: models::Connection,
     title: String,
 ) -> Result<(), String> {
+    let id = connection.id.clone();
+    app.state::<ConnectionDetailSnapshots>()
+        .0
+        .lock()
+        .map_err(|_| "连接详情缓存不可用".to_string())?
+        .insert(id.clone(), connection);
+
     let label = create_connection_window_label(&id);
 
     if let Some(window) = app.get_webview_window(&label) {
@@ -106,7 +116,7 @@ async fn open_connection_detail_window(
     let encoded_id = encode_route_segment(&id);
     let url = WebviewUrl::App(format!("index.html#/connection-detail/{encoded_id}").into());
 
-    WebviewWindowBuilder::new(&app, label, url)
+    let window = WebviewWindowBuilder::new(&app, label, url)
         .title(title)
         .inner_size(720.0, 680.0)
         .min_inner_size(560.0, 520.0)
@@ -117,7 +127,28 @@ async fn open_connection_detail_window(
         .build()
         .map_err(|error| error.to_string())?;
 
+    let detail_app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut snapshots) = detail_app.state::<ConnectionDetailSnapshots>().0.lock() {
+                snapshots.remove(&id);
+            }
+        }
+    });
+
     Ok(())
+}
+
+#[tauri::command]
+fn get_connection_detail_snapshot(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<models::Connection>, String> {
+    app.state::<ConnectionDetailSnapshots>()
+        .0
+        .lock()
+        .map_err(|_| "连接详情缓存不可用".to_string())
+        .map(|snapshots| snapshots.get(&id).cloned())
 }
 
 #[tauri::command]
@@ -367,6 +398,7 @@ fn get_lan_ip() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ConnectionDetailSnapshots::default())
         .setup(|app| {
             tray::setup(app.handle())?;
             Ok(())
@@ -376,14 +408,6 @@ pub fn run() {
                 let tauri::WindowEvent::CloseRequested { api, .. } = event else {
                     return;
                 };
-
-                for (label, secondary_window) in window.app_handle().webview_windows() {
-                    if label != "main" {
-                        if let Err(error) = secondary_window.destroy() {
-                            eprintln!("销毁子窗口“{label}”失败：{error}");
-                        }
-                    }
-                }
 
                 if tray::should_minimize_on_close(window.app_handle()) {
                     api.prevent_close();
@@ -398,6 +422,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_connections_window,
             open_connection_detail_window,
+            get_connection_detail_snapshot,
             get_app_snapshot,
             save_app_snapshot,
             refresh_runtime_data,

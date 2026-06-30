@@ -2,8 +2,8 @@ name: 跨平台质量检查
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags:
+      - 'v*'
 
 jobs:
   check:

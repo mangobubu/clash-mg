@@ -295,9 +295,7 @@ async fn refresh_runtime_data(
     let snapshot = subscription::enrich_runtime_nodes(&app, snapshot)?;
     let mut refreshed = mihomo::refresh_runtime_data(snapshot).await;
     core::merge_core_failure_logs(&app, &mut refreshed);
-    let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
-    storage::save_snapshot(&app, &refreshed)?;
-    Ok(refreshed)
+    subscription::enrich_runtime_nodes(&app, refreshed)
 }
 
 #[tauri::command]

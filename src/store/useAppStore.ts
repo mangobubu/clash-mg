@@ -13,6 +13,7 @@ import {
 } from "../backend/api";
 import { createEmptyAppData, defaultSettings } from "../defaults/appDefaults";
 import type { AppData, AppState, DelayResult, OverrideItem, Subscription, SubscriptionRefreshResult } from "../types";
+import { mergeRuntimeSnapshot } from "./runtimeSnapshot";
 
 const currentTime = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 
@@ -28,6 +29,9 @@ const overrideKeyByScope: Record<OverrideScope, OverrideKey> = {
 const emptyAppData = createEmptyAppData();
 let persistTimer: number | undefined;
 let connectionRefreshRevision = 0;
+let runtimeRefreshRevision = 0;
+let stateRevision = 0;
+let persistenceReady = false;
 const closingConnectionIds = new Set<string>();
 
 const isRuntimeProviderRecord = (subscription: Subscription) =>
@@ -68,6 +72,7 @@ const toAppData = (state: AppState): AppData => ({
 });
 
 const persistCurrentState = async () => {
+  if (!persistenceReady) throw new Error("应用数据尚未成功加载，已阻止覆盖本地状态文件");
   try {
     await saveAppSnapshot(toAppData(useAppStore.getState()));
   } catch (error) {
@@ -85,6 +90,8 @@ const persistCurrentState = async () => {
 };
 
 const queuePersist = () => {
+  stateRevision += 1;
+  if (!persistenceReady) return;
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => {
     persistTimer = undefined;
@@ -122,6 +129,11 @@ const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
   });
 };
 
+const applyCommittedSnapshot = (snapshot: AppData, backendAvailable = true) => {
+  stateRevision += 1;
+  applySnapshot(snapshot, backendAvailable);
+};
+
 const appendLog = (level: string, source: string, content: string) => {
   useAppStore.setState((state) => ({
     logs: [
@@ -155,22 +167,33 @@ export const useAppStore = create<AppState>()((set, get) => ({
   initializeAppState: async () => {
     try {
       const { data, backendAvailable } = await loadAppSnapshot();
+      persistenceReady = true;
       applySnapshot(data, backendAvailable);
     } catch (error) {
       console.error(error);
+      persistenceReady = false;
       set({ ...createEmptyAppData(), hydrated: true, backendAvailable: false });
-      appendLog("ERROR", "后端", `应用数据加载失败：${String(error)}`);
+      message.error({ content: `应用数据加载失败，已阻止空状态覆盖原文件：${String(error)}`, duration: 8 });
     }
   },
 
   refreshRuntimeData: async () => {
+    const requestRuntimeRevision = ++runtimeRefreshRevision;
+    const requestStateRevision = stateRevision;
     const requestRevision = connectionRefreshRevision;
     try {
       const snapshot = await refreshRuntimeSnapshot(toAppData(get()));
+      if (requestRuntimeRevision !== runtimeRefreshRevision) return;
+      const current = toAppData(get());
+      const merged = mergeRuntimeSnapshot(
+        current,
+        snapshot,
+        requestStateRevision !== stateRevision,
+      );
       applySnapshot({
-        ...snapshot,
+        ...merged,
         connections: requestRevision === connectionRefreshRevision
-          ? snapshot.connections
+          ? merged.connections
           : get().connections,
       }, true);
     } catch (error) {
@@ -284,7 +307,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (group && selectedProxy) {
       try {
         const snapshot = await selectRuntimeProxy(toAppData(current), group.name, selectedProxy.name);
-        applySnapshot(snapshot, current.backendAvailable);
+        applyCommittedSnapshot(snapshot, current.backendAvailable);
         if (!current.backendAvailable) await saveAppSnapshot(snapshot);
       } catch (error) {
         appendLog("ERROR", "代理", `Mihomo 代理切换失败：${String(error)}`);
@@ -416,7 +439,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   deleteSubscription: async (id) => {
     window.clearTimeout(persistTimer);
     const snapshot = await deleteLocalSubscription(toAppData(get()), id);
-    applySnapshot(snapshot, get().backendAvailable);
+    applyCommittedSnapshot(snapshot, get().backendAvailable);
   },
   refreshSubscriptions: async (ids) => {
     const current = get();
@@ -432,7 +455,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     try {
       const refreshed = await refreshLocalSubscriptions(toAppData(current), targets.map((subscription) => subscription.id));
-      applySnapshot(refreshed.snapshot, get().backendAvailable);
+      applyCommittedSnapshot(refreshed.snapshot, get().backendAvailable);
       result.localUpdated = refreshed.updated;
       result.updated = refreshed.updated;
       result.failed = refreshed.failed;
@@ -520,7 +543,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const snapshot = await closeRuntimeConnections(toAppData(get()), uniqueIds);
       connectionRefreshRevision += 1;
-      applySnapshot(snapshot, true);
+      applyCommittedSnapshot(snapshot, true);
     } catch (error) {
       connectionRefreshRevision += 1;
       uniqueIds.forEach((id) => closingConnectionIds.delete(id));

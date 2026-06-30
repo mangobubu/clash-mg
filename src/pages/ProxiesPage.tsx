@@ -388,7 +388,7 @@ export function ProxiesPage() {
       groupIds: values.groupIds,
       currentNodeId,
       autoTest: values.autoTest,
-      allowManual: values.type === "Selector",
+      allowManual: values.type === "Selector" || values.type === "Fallback",
     };
 
     if (editingGroup) {

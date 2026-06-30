@@ -58,7 +58,7 @@ const dnsSections: SettingSection[] = [
     { key: "dnsEnabled", label: "启用 DNS", control: "switch" },
     { key: "enhancedMode", label: "增强模式", control: "select", options: ["Fake-IP", "Redir-Host", "关闭"] },
     { key: "dnsIpv6", label: "IPv6 解析", control: "switch" },
-    { key: "overrideSystemDns", label: "覆写系统 DNS", control: "switch" },
+    { key: "overrideSystemDns", label: "覆写系统 DNS", description: "TUN 开启时接管系统 DNS，关闭后自动恢复", control: "switch" },
     { key: "dnsListen", label: "监听地址", control: "input" },
     { key: "useHosts", label: "使用 hosts", control: "switch" },
   ] },

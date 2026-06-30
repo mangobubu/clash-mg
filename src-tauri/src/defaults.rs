@@ -56,7 +56,8 @@ pub fn default_settings() -> SettingsMap {
         ("dnsIpv6".into(), json!(false)),
         ("dnsListen".into(), json!("0.0.0.0:1053")),
         ("enhancedMode".into(), json!("Fake-IP")),
-        ("overrideSystemDns".into(), json!(false)),
+        ("overrideSystemDns".into(), json!(true)),
+        ("systemDnsOverrideDefaultV2".into(), json!(true)),
         ("useHosts".into(), json!(true)),
         ("defaultDns".into(), json!(["223.5.5.5", "119.29.29.29"])),
         (
@@ -148,6 +149,10 @@ pub fn merge_default_settings(settings: &mut SettingsMap) {
         }
         settings.insert("processModeDefaultV2".into(), json!(true));
     }
+    if !settings.contains_key("systemDnsOverrideDefaultV2") {
+        settings.insert("overrideSystemDns".into(), json!(true));
+        settings.insert("systemDnsOverrideDefaultV2".into(), json!(true));
+    }
     for (key, value) in default_settings() {
         settings.entry(key).or_insert(value);
     }
@@ -217,5 +222,18 @@ mod tests {
         assert_eq!(settings.get("language"), Some(&json!("English")));
         assert!(!settings.contains_key("coreIpv6"));
         assert!(!settings.contains_key("uiLanguage"));
+    }
+
+    #[test]
+    fn enables_system_dns_override_for_settings_saved_before_backend_support() {
+        let mut settings = SettingsMap::from([("overrideSystemDns".into(), json!(false))]);
+
+        merge_default_settings(&mut settings);
+
+        assert_eq!(settings.get("overrideSystemDns"), Some(&json!(true)));
+        assert_eq!(
+            settings.get("systemDnsOverrideDefaultV2"),
+            Some(&json!(true))
+        );
     }
 }

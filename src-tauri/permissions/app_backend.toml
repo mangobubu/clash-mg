@@ -12,8 +12,6 @@ commands.allow = [
   "refresh_local_subscriptions",
   "delete_local_subscription",
   "test_proxy_delay",
-  "get_mihomo_core_status",
-  "download_mihomo_core",
   "start_mihomo_core",
   "get_tun_service_status",
   "install_tun_service",

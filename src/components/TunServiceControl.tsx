@@ -79,9 +79,9 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
     try {
       const next = await installTunService();
       setStatus(next);
-      message.success("TUN 系统服务安装成功");
+      message.success("Mihomo 系统服务安装成功，内核已切换为 root 运行");
     } catch (error) {
-      message.error({ content: `安装 TUN 系统服务失败：${String(error)}`, duration: 6 });
+      message.error({ content: `安装 Mihomo 系统服务失败：${String(error)}`, duration: 6 });
       await refresh();
     } finally {
       setBusy(false);
@@ -93,9 +93,9 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
     try {
       const next = await uninstallTunService();
       setStatus(next);
-      message.success("TUN 系统服务已删除");
+      message.success("Mihomo 系统服务已删除，内核已恢复为当前用户运行");
     } catch (error) {
-      message.error({ content: `删除 TUN 系统服务失败：${String(error)}`, duration: 6 });
+      message.error({ content: `删除 Mihomo 系统服务失败：${String(error)}`, duration: 6 });
       await refresh();
     } finally {
       setBusy(false);
@@ -141,7 +141,7 @@ export function TunServiceControl({
 }) {
   const { status, checking, busy, switching, install, uninstall, toggleTun } = useTunService();
   const available = isTunServiceAvailable(status);
-  const serviceActionLabel = status.installed ? "删除 TUN 系统服务" : "安装 TUN 系统服务";
+  const serviceActionLabel = status.installed ? "删除 Mihomo 系统服务" : "安装 Mihomo 系统服务";
 
   const handleServiceAction = () => {
     if (!status.installed) {
@@ -149,10 +149,10 @@ export function TunServiceControl({
       return;
     }
     Modal.confirm({
-      title: "删除 TUN 系统服务？",
+      title: "删除 Mihomo 系统服务？",
       content: checked
-        ? "当前 TUN 正在运行。删除前会先关闭 TUN 并恢复普通 Mihomo 进程。"
-        : "删除后 TUN 开关将保持禁用，重新安装服务后才能再次开启。",
+        ? "当前 TUN 正在运行。删除前会先关闭 TUN，并将 Mihomo 恢复为当前用户运行。"
+        : "删除后 Mihomo 将恢复为当前用户运行；TUN 会保持禁用，重新安装服务后才能开启。",
       okText: "删除服务",
       cancelText: "取消",
       okButtonProps: { danger: true },
@@ -163,10 +163,10 @@ export function TunServiceControl({
   const explanation = (
     <div className="tun-service-popover">
       <Typography.Paragraph>
-        TUN 需要系统级网络权限。安装服务时会请求一次管理员授权，之后日常开启和关闭 TUN 不再重复提权。
+        安装服务时会请求一次管理员授权。安装完成后，普通代理和 TUN 都由系统服务以 root 身份运行 Mihomo，关闭应用后内核仍保持运行。
       </Typography.Paragraph>
       <Typography.Paragraph>
-        服务仅接受状态查询、启动 TUN 和停止 TUN，且只运行安装到系统保护目录中的 Mihomo。
+        TUN 开关只切换运行配置，不再改变 Mihomo 的进程所有者；系统代理仍使用相同的本地监听端口。
       </Typography.Paragraph>
       <Typography.Text type="secondary">
         {status.installed
@@ -194,8 +194,8 @@ export function TunServiceControl({
         aria-label={serviceActionLabel}
         title={serviceActionLabel}
       />
-      <Popover title="TUN 系统服务说明" content={explanation} placement="topRight" trigger={["hover", "focus"]}>
-        <Button type="text" icon={<InfoCircleOutlined />} aria-label="TUN 系统服务说明" />
+      <Popover title="Mihomo 系统服务说明" content={explanation} placement="topRight" trigger={["hover", "focus"]}>
+        <Button type="text" icon={<InfoCircleOutlined />} aria-label="Mihomo 系统服务说明" />
       </Popover>
     </div>
   );

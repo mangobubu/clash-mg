@@ -15,7 +15,6 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
-flate2 = "1"
 getrandom = "0.3"
 percent-encoding = "2.3.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
@@ -24,7 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["time"] }
-zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 png = "0.18.1"

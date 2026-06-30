@@ -346,16 +346,6 @@ async fn test_proxy_delay(settings: SettingsMap, node_name: String) -> Result<De
 }
 
 #[tauri::command]
-fn get_mihomo_core_status(app: tauri::AppHandle) -> Result<core::MihomoCoreStatus, String> {
-    core::core_status(&app)
-}
-
-#[tauri::command]
-async fn download_mihomo_core(app: tauri::AppHandle) -> Result<core::MihomoCoreStatus, String> {
-    core::download_core(app).await
-}
-
-#[tauri::command]
 async fn start_mihomo_core(
     app: tauri::AppHandle,
     settings: SettingsMap,
@@ -385,9 +375,13 @@ fn get_tun_service_status(app: tauri::AppHandle) -> Result<tun_service::TunServi
 async fn install_tun_service(
     app: tauri::AppHandle,
 ) -> Result<tun_service::TunServiceStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || tun_service::install(&app))
+    let snapshot = storage::load_snapshot(&app)?;
+    let install_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || tun_service::install(&install_app))
         .await
-        .map_err(|error| format!("安装 TUN 系统服务任务失败：{error}"))?
+        .map_err(|error| format!("安装 Mihomo 系统服务任务失败：{error}"))??;
+    core::start_core(app.clone(), snapshot).await?;
+    tun_service::status(&app)
 }
 
 #[tauri::command]
@@ -402,9 +396,13 @@ async fn uninstall_tun_service(
         let _ = core::sync_runtime_config(&app, &snapshot).await;
         storage::save_snapshot(&app, &snapshot)?;
     }
-    tauri::async_runtime::spawn_blocking(move || tun_service::uninstall(&app))
-        .await
-        .map_err(|error| format!("删除 TUN 系统服务任务失败：{error}"))?
+    let uninstall_app = app.clone();
+    let status =
+        tauri::async_runtime::spawn_blocking(move || tun_service::uninstall(&uninstall_app))
+            .await
+            .map_err(|error| format!("删除 Mihomo 系统服务任务失败：{error}"))??;
+    core::start_core(app, snapshot).await?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -513,8 +511,6 @@ pub fn run() {
             refresh_local_subscriptions,
             delete_local_subscription,
             test_proxy_delay,
-            get_mihomo_core_status,
-            download_mihomo_core,
             start_mihomo_core,
             get_tun_service_status,
             install_tun_service,

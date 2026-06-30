@@ -1,11 +1,13 @@
 use crate::models::SettingsMap;
 
+#[cfg(windows)]
 const RULE_NAME: &str = "Clash-MG Proxy Ports";
 
 pub fn apply(settings: &SettingsMap, enabled: bool) -> Result<(), String> {
     apply_platform(settings, enabled)
 }
 
+#[cfg(any(windows, test))]
 fn proxy_ports(settings: &SettingsMap) -> Vec<u16> {
     let mut ports = ["mixedPort", "httpPort", "socksPort"]
         .into_iter()

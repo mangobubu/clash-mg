@@ -804,6 +804,10 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
     }
     root.insert(key("tun"), Value::Mapping(tun));
 
+    if setting_bool(settings, "tunMode", false) {
+        apply_tun_sniffer(root)?;
+    }
+
     let mut dns = root
         .remove(key("dns"))
         .map(|value| {
@@ -871,6 +875,61 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
     );
     root.insert(key("dns"), Value::Mapping(dns));
     Ok(())
+}
+
+fn apply_tun_sniffer(root: &mut Mapping) -> Result<(), String> {
+    let mut sniffer = root
+        .remove(key("sniffer"))
+        .map(|value| {
+            value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| "基础配置的 sniffer 必须是 YAML 对象".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    sniffer.insert(key("enable"), Value::Bool(true));
+    sniffer.insert(key("force-dns-mapping"), Value::Bool(true));
+    sniffer.insert(key("parse-pure-ip"), Value::Bool(true));
+    sniffer.insert(key("override-destination"), Value::Bool(true));
+
+    let mut protocols = sniffer
+        .remove(key("sniff"))
+        .map(|value| {
+            value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| "基础配置的 sniffer.sniff 必须是 YAML 对象".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    insert_sniffer_protocol(&mut protocols, "HTTP", &["80", "8080-8880"]);
+    insert_sniffer_protocol(&mut protocols, "TLS", &["443", "8443"]);
+    insert_sniffer_protocol(&mut protocols, "QUIC", &["443", "8443"]);
+    sniffer.insert(key("sniff"), Value::Mapping(protocols));
+    root.insert(key("sniffer"), Value::Mapping(sniffer));
+    Ok(())
+}
+
+fn insert_sniffer_protocol(protocols: &mut Mapping, protocol: &str, ports: &[&str]) {
+    if protocols.contains_key(key(protocol)) {
+        return;
+    }
+    let mut config = Mapping::new();
+    config.insert(
+        key("ports"),
+        Value::Sequence(
+            ports
+                .iter()
+                .map(|port| {
+                    port.parse::<u16>()
+                        .map(|value| Value::Number(value.into()))
+                        .unwrap_or_else(|_| Value::String((*port).into()))
+                })
+                .collect(),
+        ),
+    );
+    protocols.insert(key(protocol), Value::Mapping(config));
 }
 
 fn apply_default_route(rules: &mut Vec<Value>, groups: &[Value], snapshot: &AppSnapshot) {
@@ -2113,10 +2172,69 @@ mod tests {
             .and_then(|dns| dns.get(key("enable")))
             .and_then(Value::as_bool)
             .unwrap_or(false));
+        let sniffer = root
+            .get(key("sniffer"))
+            .and_then(Value::as_mapping)
+            .expect("TUN 模式应启用域名嗅探");
+        assert_eq!(
+            sniffer.get(key("enable")).and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            sniffer
+                .get(key("override-destination"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        let protocols = sniffer
+            .get(key("sniff"))
+            .and_then(Value::as_mapping)
+            .expect("应生成嗅探协议配置");
+        assert!(protocols.contains_key(key("HTTP")));
+        assert!(protocols.contains_key(key("TLS")));
+        assert!(protocols.contains_key(key("QUIC")));
         assert_eq!(
             rules.first().and_then(Value::as_str),
             Some("MATCH,自动选择")
         );
+    }
+
+    #[test]
+    fn preserves_custom_sniffer_protocols_while_enabling_tun_fallbacks() {
+        let mut settings = crate::defaults::default_settings();
+        settings.insert("tunMode".into(), serde_json::json!(true));
+        let mut root = serde_yaml::from_str::<Value>(
+            "sniffer:\n  enable: false\n  skip-domain:\n    - private.example\n  sniff:\n    TLS:\n      ports: [9443]\n",
+        )
+        .expect("测试配置应可解析")
+        .as_mapping()
+        .cloned()
+        .expect("测试配置根节点应为对象");
+
+        apply_runtime_settings(&mut root, &settings).expect("应合并 TUN 嗅探配置");
+
+        let sniffer = root
+            .get(key("sniffer"))
+            .and_then(Value::as_mapping)
+            .expect("应保留 sniffer");
+        assert_eq!(
+            sniffer.get(key("enable")).and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(sniffer.contains_key(key("skip-domain")));
+        let protocols = sniffer
+            .get(key("sniff"))
+            .and_then(Value::as_mapping)
+            .expect("应保留协议配置");
+        let tls_ports = protocols
+            .get(key("TLS"))
+            .and_then(Value::as_mapping)
+            .and_then(|tls| tls.get(key("ports")))
+            .and_then(Value::as_sequence)
+            .expect("应保留自定义 TLS 端口");
+        assert_eq!(tls_ports, &[Value::Number(9443.into())]);
+        assert!(protocols.contains_key(key("HTTP")));
+        assert!(protocols.contains_key(key("QUIC")));
     }
 
     #[test]

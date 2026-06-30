@@ -25,12 +25,27 @@ npm.cmd run dev
 npm.cmd run tauri dev
 ```
 
+`tauri dev` 和 `tauri build` 会在编译前自动准备 Mihomo 内核。构建脚本根据 Rust 目标三元组只下载并打包当前系统与 CPU 架构对应的 Mihomo `v1.19.27`，同时校验官方 SHA-256；终端用户启动应用时不再下载内核。
+
+如需单独准备当前构建平台的内核：
+
+```powershell
+npm.cmd run prepare:mihomo
+```
+
+交叉编译时可显式指定目标，例如：
+
+```powershell
+npm.cmd run prepare:mihomo -- --target aarch64-apple-darwin
+```
+
 ## 质量检查
 
 ```powershell
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
+npm.cmd run prepare:mihomo
 Set-Location src-tauri
 cargo check
 ```

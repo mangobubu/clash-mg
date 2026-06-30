@@ -1,5 +1,6 @@
 use tauri::AppHandle;
 
+#[cfg(windows)]
 const AUTOSTART_NAME: &str = "Clash-MG";
 
 pub fn apply(app: &AppHandle, enabled: bool) -> Result<(), String> {

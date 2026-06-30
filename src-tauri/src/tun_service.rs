@@ -25,8 +25,9 @@ const SERVICE_NAME: &str = "ClashMgTunService";
 #[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.clashmg.tun-service";
 const SERVICE_PORT: u16 = 47892;
-const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.6");
+const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.9");
 const CLIENT_CONFIG_NAME: &str = "tun-service.json";
+const RUNTIME_STATE_NAME: &str = "runtime-state.json";
 const MAX_REQUEST_BYTES: u64 = 48 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -103,6 +104,8 @@ struct TunServiceRequest {
     log_max_bytes: Option<u64>,
     #[serde(default)]
     rotate_logs: Option<bool>,
+    #[serde(default)]
+    override_system_dns: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,11 +119,18 @@ struct TunServiceResponse {
     log_content: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct TunLogOptions {
     enabled: bool,
     max_bytes: u64,
     rotate: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedRuntimeState {
+    log: TunLogOptions,
+    override_system_dns: bool,
 }
 
 struct ServiceRuntime {
@@ -136,20 +146,34 @@ impl ServiceRuntime {
             Ok(None) => true,
             Ok(Some(_)) | Err(_) => {
                 self.child = None;
+                if let Err(error) = restore_system_dns() {
+                    append_service_log(&format!("Mihomo 异常退出后恢复系统 DNS 失败：{error}"));
+                }
                 false
             }
         }
     }
 
     fn stop(&mut self) -> Result<(), String> {
-        let Some(mut child) = self.child.take() else {
-            return Ok(());
+        let process_result = if let Some(mut child) = self.child.take() {
+            let result = child
+                .kill()
+                .map_err(|error| format!("停止服务托管的 Mihomo 失败：{error}"));
+            if result.is_ok() {
+                let _ = child.wait();
+            }
+            result
+        } else {
+            Ok(())
         };
-        child
-            .kill()
-            .map_err(|error| format!("停止服务托管的 Mihomo 失败：{error}"))?;
-        let _ = child.wait();
-        Ok(())
+        let dns_result = restore_system_dns();
+        match (process_result, dns_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(process_error), Err(dns_error)) => {
+                Err(format!("{process_error}；恢复系统 DNS 失败：{dns_error}"))
+            }
+        }
     }
 }
 
@@ -213,6 +237,7 @@ pub fn status(app: &AppHandle) -> Result<TunServiceStatus, String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            override_system_dns: None,
         },
     ) {
         Ok(response) => Ok(TunServiceStatus {
@@ -239,9 +264,6 @@ pub fn install(app: &AppHandle) -> Result<TunServiceStatus, String> {
     }
 
     let core_path = core::core_executable_path(app)?;
-    if !core_path.is_file() {
-        return Err("Mihomo 内核尚未安装，无法安装 TUN 系统服务".into());
-    }
 
     let client_path = client_config_path(app)?;
     let config = TunServiceClientConfig {
@@ -283,22 +305,7 @@ pub fn install(app: &AppHandle) -> Result<TunServiceStatus, String> {
 }
 
 pub fn uninstall(app: &AppHandle) -> Result<TunServiceStatus, String> {
-    if let Some(config) = read_client_config(app)? {
-        let _ = send_request(
-            &config,
-            TunServiceRequest {
-                token: config.token.clone(),
-                action: "stop".into(),
-                version: SERVICE_VERSION.into(),
-                config: None,
-                files: Vec::new(),
-                core_dir: None,
-                log_enabled: None,
-                log_max_bytes: None,
-                rotate_logs: None,
-            },
-        );
-    }
+    let _ = stop_core(app);
 
     run_elevated(&["--uninstall-tun-service-elevated".into()])?;
     let client_path = client_config_path(app)?;
@@ -308,33 +315,59 @@ pub fn uninstall(app: &AppHandle) -> Result<TunServiceStatus, String> {
     Ok(TunServiceStatus::not_installed())
 }
 
-pub fn start_tun(
+pub fn start_core(
     app: &AppHandle,
     config_content: String,
     settings: &SettingsMap,
 ) -> Result<(), String> {
-    let config = read_client_config(app)?
-        .ok_or_else(|| "尚未安装 TUN 系统服务，请先点击 TUN 开关旁的安装按钮".to_string())?;
-    let files = collect_service_files(app)?;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let log_options = core_log::options_from_settings(&app_data_dir, settings);
+    let config = read_client_config(app)?.ok_or_else(|| "尚未安装 Mihomo 系统服务".to_string())?;
+    let response = send_request(
+        &config,
+        runtime_request(app, &config, "start", config_content, settings)?,
+    )?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response
+            .message
+            .unwrap_or_else(|| "Mihomo 系统服务启动内核失败".into()))
+    }
+}
+
+pub fn sync_core_config(
+    app: &AppHandle,
+    config_content: String,
+    settings: &SettingsMap,
+) -> Result<(), String> {
+    let config = read_client_config(app)?.ok_or_else(|| "尚未安装 Mihomo 系统服务".to_string())?;
+    let response = send_request(
+        &config,
+        runtime_request(app, &config, "sync", config_content, settings)?,
+    )?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response
+            .message
+            .unwrap_or_else(|| "同步 Mihomo 系统服务配置失败".into()))
+    }
+}
+
+pub fn reconcile_core_network(app: &AppHandle) -> Result<(), String> {
+    let config = read_client_config(app)?.ok_or_else(|| "尚未安装 Mihomo 系统服务".to_string())?;
     let response = send_request(
         &config,
         TunServiceRequest {
             token: config.token.clone(),
-            action: "start".into(),
+            action: "network".into(),
             version: SERVICE_VERSION.into(),
-            config: Some(config_content),
-            files,
-            core_dir: core::core_dir(app)
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned()),
-            log_enabled: Some(log_options.enabled),
-            log_max_bytes: Some(log_options.max_bytes),
-            rotate_logs: Some(log_options.rotate),
+            config: None,
+            files: Vec::new(),
+            core_dir: None,
+            log_enabled: None,
+            log_max_bytes: None,
+            rotate_logs: None,
+            override_system_dns: None,
         },
     )?;
     if response.ok {
@@ -342,11 +375,45 @@ pub fn start_tun(
     } else {
         Err(response
             .message
-            .unwrap_or_else(|| "TUN 系统服务启动 Mihomo 失败".into()))
+            .unwrap_or_else(|| "同步 Mihomo 系统网络状态失败".into()))
     }
 }
 
-pub fn stop_tun(app: &AppHandle) -> Result<(), String> {
+fn runtime_request(
+    app: &AppHandle,
+    config: &TunServiceClientConfig,
+    action: &str,
+    config_content: String,
+    settings: &SettingsMap,
+) -> Result<TunServiceRequest, String> {
+    let files = collect_service_files(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let log_options = core_log::options_from_settings(&app_data_dir, settings);
+    Ok(TunServiceRequest {
+        token: config.token.clone(),
+        action: action.into(),
+        version: SERVICE_VERSION.into(),
+        config: Some(config_content),
+        files,
+        core_dir: core::core_dir(app)
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned()),
+        log_enabled: Some(log_options.enabled),
+        log_max_bytes: Some(log_options.max_bytes),
+        rotate_logs: Some(log_options.rotate),
+        override_system_dns: Some(
+            settings
+                .get("overrideSystemDns")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+        ),
+    })
+}
+
+pub fn stop_core(app: &AppHandle) -> Result<(), String> {
     let Some(config) = read_client_config(app)? else {
         return Ok(());
     };
@@ -362,6 +429,7 @@ pub fn stop_tun(app: &AppHandle) -> Result<(), String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            override_system_dns: None,
         },
     )?;
     if response.ok {
@@ -369,12 +437,12 @@ pub fn stop_tun(app: &AppHandle) -> Result<(), String> {
     } else {
         Err(response
             .message
-            .unwrap_or_else(|| "停止 TUN 系统服务失败".into()))
+            .unwrap_or_else(|| "停止系统服务托管的 Mihomo 失败".into()))
     }
 }
 
 pub fn read_core_log(app: &AppHandle) -> Result<String, String> {
-    let config = read_client_config(app)?.ok_or_else(|| "尚未安装 TUN 系统服务".to_string())?;
+    let config = read_client_config(app)?.ok_or_else(|| "尚未安装 Mihomo 系统服务".to_string())?;
     let response = send_request(
         &config,
         TunServiceRequest {
@@ -387,6 +455,7 @@ pub fn read_core_log(app: &AppHandle) -> Result<String, String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            override_system_dns: None,
         },
     )?;
     if response.ok {
@@ -394,7 +463,7 @@ pub fn read_core_log(app: &AppHandle) -> Result<String, String> {
     } else {
         Err(response
             .message
-            .unwrap_or_else(|| "读取 TUN Mihomo 日志失败".into()))
+            .unwrap_or_else(|| "读取系统服务 Mihomo 日志失败".into()))
     }
 }
 
@@ -414,7 +483,7 @@ fn read_client_config(app: &AppHandle) -> Result<Option<TunServiceClientConfig>,
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
     serde_json::from_str(&content)
         .map(Some)
-        .map_err(|error| format!("读取 TUN 服务状态失败：{error}"))
+        .map_err(|error| format!("读取 Mihomo 系统服务状态失败：{error}"))
 }
 
 fn generate_token() -> Result<String, String> {
@@ -462,7 +531,7 @@ fn collect_service_files(app: &AppHandle) -> Result<Vec<TunServiceFile>, String>
             .map_err(|error| format!("读取订阅缓存“{file_name}”失败：{error}"))?;
         total_size = total_size.saturating_add(content.len());
         if total_size > MAX_FILE_BYTES {
-            return Err("TUN 服务运行文件总大小超过 16 MB 限制".into());
+            return Err("Mihomo 服务运行文件总大小超过 16 MB 限制".into());
         }
         result.push(TunServiceFile {
             path: format!("subscriptions/{file_name}"),
@@ -497,13 +566,13 @@ fn send_request(
         .set_write_timeout(Some(IPC_TIMEOUT))
         .map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut stream, &request)
-        .map_err(|error| format!("向 TUN 系统服务发送请求失败：{error}"))?;
+        .map_err(|error| format!("向 Mihomo 系统服务发送请求失败：{error}"))?;
     stream
         .write_all(b"\n")
-        .map_err(|error| format!("结束 TUN 系统服务请求失败：{error}"))?;
+        .map_err(|error| format!("结束 Mihomo 系统服务请求失败：{error}"))?;
     stream
         .flush()
-        .map_err(|error| format!("提交 TUN 系统服务请求失败：{error}"))?;
+        .map_err(|error| format!("提交 Mihomo 系统服务请求失败：{error}"))?;
 
     let mut response = String::new();
     BufReader::new(stream)
@@ -531,23 +600,40 @@ fn run_service_entry() -> Result<(), String> {
 
 fn run_service_loop(stop: Arc<AtomicBool>) -> Result<(), String> {
     let daemon_config = read_daemon_config()?;
+    if let Err(error) = restore_system_dns() {
+        append_service_log(&format!("服务启动时恢复遗留系统 DNS 失败：{error}"));
+    }
     let listener = TcpListener::bind(("127.0.0.1", SERVICE_PORT))
-        .map_err(|error| format!("TUN 服务监听本地端口失败：{error}"))?;
+        .map_err(|error| format!("Mihomo 系统服务监听本地端口失败：{error}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
     let mut runtime = ServiceRuntime { child: None };
+    if let Err(error) = start_persisted_core(&daemon_config, &mut runtime) {
+        append_service_log(&format!("恢复常驻 Mihomo 失败：{error}"));
+    }
 
-    while !stop.load(Ordering::Relaxed) {
+    let loop_result = loop {
+        if stop.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        runtime.running();
         match listener.accept() {
             Ok((stream, _)) => handle_connection(stream, &daemon_config, &mut runtime),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(80));
             }
-            Err(error) => return Err(format!("TUN 服务接收连接失败：{error}")),
+            Err(error) => break Err(format!("Mihomo 系统服务接收连接失败：{error}")),
+        }
+    };
+    let stop_result = runtime.stop();
+    match (loop_result, stop_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(loop_error), Err(stop_error)) => {
+            Err(format!("{loop_error}；停止 TUN 运行环境失败：{stop_error}"))
         }
     }
-    runtime.stop()
 }
 
 fn handle_connection(
@@ -615,7 +701,7 @@ fn handle_request(
     runtime: &mut ServiceRuntime,
 ) -> Result<TunServiceResponse, String> {
     if request.token != daemon_config.token {
-        return Err("TUN 系统服务认证失败".into());
+        return Err("Mihomo 系统服务认证失败".into());
     }
     if request.version != SERVICE_VERSION {
         return Ok(TunServiceResponse {
@@ -668,7 +754,7 @@ fn handle_request(
         "start" => {
             let content = request
                 .config
-                .ok_or_else(|| "启动 TUN 缺少 Mihomo 配置".to_string())?;
+                .ok_or_else(|| "启动 Mihomo 缺少运行配置".to_string())?;
             start_managed_core(
                 daemon_config,
                 runtime,
@@ -676,6 +762,7 @@ fn handle_request(
                 &request.files,
                 request.core_dir.as_deref(),
                 log_options,
+                request.override_system_dns.unwrap_or(false),
             )?;
             Ok(TunServiceResponse {
                 ok: true,
@@ -685,7 +772,39 @@ fn handle_request(
                 log_content: None,
             })
         }
-        _ => Err("TUN 系统服务不支持该操作".into()),
+        "sync" => {
+            let content = request
+                .config
+                .ok_or_else(|| "同步 Mihomo 缺少运行配置".to_string())?;
+            sync_managed_core_files(
+                daemon_config,
+                &content,
+                &request.files,
+                request.core_dir.as_deref(),
+                PersistedRuntimeState {
+                    log: log_options,
+                    override_system_dns: request.override_system_dns.unwrap_or(false),
+                },
+            )?;
+            Ok(TunServiceResponse {
+                ok: true,
+                running: runtime.running(),
+                version: SERVICE_VERSION.into(),
+                message: None,
+                log_content: None,
+            })
+        }
+        "network" => {
+            reconcile_managed_network(daemon_config, runtime)?;
+            Ok(TunServiceResponse {
+                ok: true,
+                running: true,
+                version: SERVICE_VERSION.into(),
+                message: None,
+                log_content: None,
+            })
+        }
+        _ => Err("Mihomo 系统服务不支持该操作".into()),
     }
 }
 
@@ -696,9 +815,25 @@ fn start_managed_core(
     files: &[TunServiceFile],
     core_dir: Option<&str>,
     log: TunLogOptions,
+    override_system_dns: bool,
+) -> Result<(), String> {
+    runtime.stop()?;
+    let state = PersistedRuntimeState {
+        log,
+        override_system_dns,
+    };
+    sync_managed_core_files(daemon_config, content, files, core_dir, state)?;
+    spawn_managed_core(daemon_config, runtime, content, state)
+}
+
+fn sync_managed_core_files(
+    daemon_config: &TunServiceDaemonConfig,
+    content: &str,
+    files: &[TunServiceFile],
+    core_dir: Option<&str>,
+    state: PersistedRuntimeState,
 ) -> Result<(), String> {
     validate_service_config(content)?;
-    runtime.stop()?;
     fs::create_dir_all(&daemon_config.data_dir).map_err(|error| error.to_string())?;
 
     let subscriptions = daemon_config.data_dir.join("subscriptions");
@@ -720,11 +855,23 @@ fn start_managed_core(
 
     let config_path = daemon_config.data_dir.join("config.yaml");
     fs::write(&config_path, content).map_err(|error| error.to_string())?;
+    write_private_json(&runtime_state_path(), &state)
+        .map_err(|error| format!("保存 Mihomo 常驻状态失败：{error}"))
+}
+
+fn spawn_managed_core(
+    daemon_config: &TunServiceDaemonConfig,
+    runtime: &mut ServiceRuntime,
+    content: &str,
+    state: PersistedRuntimeState,
+) -> Result<(), String> {
+    let tun_enabled = validate_service_config(content)?;
+    let config_path = daemon_config.data_dir.join("config.yaml");
     let log_options = core_log::CoreLogOptions {
-        enabled: log.enabled,
+        enabled: state.log.enabled,
         path: daemon_config.data_dir.join("core.log"),
-        rotate: log.rotate,
-        max_bytes: log.max_bytes,
+        rotate: state.log.rotate,
+        max_bytes: state.log.max_bytes,
     };
     let (log_file_out, log_file_err) = core_log::open_log_stdio(&log_options)?;
 
@@ -740,7 +887,65 @@ fn start_managed_core(
         .spawn()
         .map_err(|error| format!("系统服务启动 Mihomo 失败：{error}"))?;
     runtime.child = Some(child);
+    if should_override_system_dns(tun_enabled, state.override_system_dns) {
+        if let Err(error) = apply_system_dns_override() {
+            let rollback = runtime.stop();
+            return Err(match rollback {
+                Ok(()) => format!("接管系统 DNS 失败：{error}；已停止 Mihomo 并恢复网络设置"),
+                Err(rollback_error) => format!(
+                    "接管系统 DNS 失败：{error}；停止 Mihomo 或恢复网络设置失败：{rollback_error}"
+                ),
+            });
+        }
+    }
     Ok(())
+}
+
+fn start_persisted_core(
+    daemon_config: &TunServiceDaemonConfig,
+    runtime: &mut ServiceRuntime,
+) -> Result<(), String> {
+    let config_path = daemon_config.data_dir.join("config.yaml");
+    let state_path = runtime_state_path();
+    if !config_path.is_file() || !state_path.is_file() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&config_path)
+        .map_err(|error| format!("读取常驻 Mihomo 配置失败：{error}"))?;
+    let state = read_persisted_runtime_state(&state_path)?;
+    spawn_managed_core(daemon_config, runtime, &content, state)
+}
+
+fn reconcile_managed_network(
+    daemon_config: &TunServiceDaemonConfig,
+    runtime: &mut ServiceRuntime,
+) -> Result<(), String> {
+    if !runtime.running() {
+        restore_system_dns()?;
+        return Err("系统服务托管的 Mihomo 未在运行".into());
+    }
+
+    let config_path = daemon_config.data_dir.join("config.yaml");
+    let content = fs::read_to_string(&config_path)
+        .map_err(|error| format!("读取 Mihomo 常驻配置失败：{error}"))?;
+    let state = read_persisted_runtime_state(&runtime_state_path())?;
+    if should_override_system_dns(
+        validate_service_config(&content)?,
+        state.override_system_dns,
+    ) {
+        apply_system_dns_override()
+    } else {
+        restore_system_dns()
+    }
+}
+
+fn read_persisted_runtime_state(path: &Path) -> Result<PersistedRuntimeState, String> {
+    let content = fs::read(path).map_err(|error| format!("读取 Mihomo 常驻状态失败：{error}"))?;
+    serde_json::from_slice(&content).map_err(|error| format!("解析 Mihomo 常驻状态失败：{error}"))
+}
+
+fn should_override_system_dns(tun_enabled: bool, override_system_dns: bool) -> bool {
+    tun_enabled && override_system_dns
 }
 
 fn copy_core_runtime_files(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
@@ -755,7 +960,7 @@ fn copy_core_runtime_files(source_dir: &Path, target_dir: &Path) -> Result<(), S
     Ok(())
 }
 
-fn validate_service_config(content: &str) -> Result<(), String> {
+fn validate_service_config(content: &str) -> Result<bool, String> {
     if content.len() > MAX_CONFIG_BYTES {
         return Err("Mihomo 配置超过 8 MB 限制".into());
     }
@@ -770,9 +975,6 @@ fn validate_service_config(content: &str) -> Result<(), String> {
         .and_then(|tun| tun.get(serde_yaml::Value::String("enable".into())))
         .and_then(serde_yaml::Value::as_bool)
         .unwrap_or(false);
-    if !tun_enabled {
-        return Err("系统服务仅允许启动已开启 TUN 的配置".into());
-    }
     for forbidden in ["external-ui", "external-ui-url"] {
         if mapping.contains_key(serde_yaml::Value::String(forbidden.into())) {
             return Err(format!("特权 TUN 配置不允许使用 {forbidden}"));
@@ -780,7 +982,7 @@ fn validate_service_config(content: &str) -> Result<(), String> {
     }
     validate_provider_paths(mapping, "proxy-providers")?;
     validate_provider_paths(mapping, "rule-providers")?;
-    Ok(())
+    Ok(tun_enabled)
 }
 
 fn validate_provider_paths(root: &serde_yaml::Mapping, section: &str) -> Result<(), String> {
@@ -832,10 +1034,6 @@ fn install_elevated(client_config_path: &Path, source_core: &Path) -> Result<(),
     if client.version != SERVICE_VERSION || client.port != SERVICE_PORT {
         return Err("待安装服务配置与当前应用版本不一致".into());
     }
-    if !source_core.is_file() {
-        return Err("待安装的 Mihomo 内核不存在".into());
-    }
-
     let source_executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let executable = service_executable_path();
     let core_path = service_core_path();
@@ -915,6 +1113,7 @@ fn protect_windows_service_directory() -> Result<(), String> {
 
 fn uninstall_elevated() -> Result<(), String> {
     unregister_platform_service()?;
+    restore_system_dns()?;
     let directory = service_install_dir();
     for attempt in 0..20 {
         if !directory.exists() {
@@ -974,6 +1173,228 @@ fn service_data_dir() -> PathBuf {
     service_install_dir().join("runtime")
 }
 
+fn runtime_state_path() -> PathBuf {
+    service_data_dir().join(RUNTIME_STATE_NAME)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_system_dns_override() -> Result<(), String> {
+    macos_system_dns::apply()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_system_dns_override() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn restore_system_dns() -> Result<(), String> {
+    macos_system_dns::restore()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn restore_system_dns() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+mod macos_system_dns {
+    use std::{net::IpAddr, process::Command};
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+
+    const NETWORK_SETUP: &str = "/usr/sbin/networksetup";
+    const DNS_BACKUP_NAME: &str = "system-dns-backup.json";
+    const TUN_DNS_SERVER: &str = "198.18.0.2";
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    struct DnsServiceBackup {
+        service: String,
+        servers: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DnsBackup {
+        services: Vec<DnsServiceBackup>,
+    }
+
+    pub fn apply() -> Result<(), String> {
+        let backup_path = backup_path();
+        if backup_path.is_file() {
+            restore()?;
+        }
+
+        let services = list_enabled_services()?;
+        if services.is_empty() {
+            return Err("未找到可接管 DNS 的 macOS 网络服务".into());
+        }
+        let backup = DnsBackup {
+            services: services
+                .into_iter()
+                .map(|service| {
+                    let servers = read_dns_servers(&service)?;
+                    Ok(DnsServiceBackup { service, servers })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        };
+        write_private_json(&backup_path, &backup)
+            .map_err(|error| format!("保存 macOS 系统 DNS 备份失败：{error}"))?;
+
+        for service in &backup.services {
+            if let Err(error) = set_dns_servers(&service.service, &[TUN_DNS_SERVER.into()])
+                .and_then(|_| verify_dns_override(&service.service))
+            {
+                let rollback = restore();
+                return Err(match rollback {
+                    Ok(()) => format!("{error}；已恢复原系统 DNS"),
+                    Err(rollback_error) => {
+                        format!("{error}；恢复原系统 DNS 失败：{rollback_error}")
+                    }
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn restore() -> Result<(), String> {
+        let path = backup_path();
+        if !path.is_file() {
+            return Ok(());
+        }
+        let content = fs::read(&path).map_err(|error| format!("读取系统 DNS 备份失败：{error}"))?;
+        let backup = serde_json::from_slice::<DnsBackup>(&content)
+            .map_err(|error| format!("解析系统 DNS 备份失败：{error}"))?;
+        let mut errors = Vec::new();
+        for service in backup.services {
+            if let Err(error) = set_dns_servers(&service.service, &service.servers)
+                .and_then(|_| verify_dns_servers(&service.service, &service.servers))
+            {
+                errors.push(error);
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("；"));
+        }
+        fs::remove_file(path).map_err(|error| format!("删除系统 DNS 备份失败：{error}"))
+    }
+
+    fn backup_path() -> PathBuf {
+        service_data_dir().join(DNS_BACKUP_NAME)
+    }
+
+    fn list_enabled_services() -> Result<Vec<String>, String> {
+        let output = run_networksetup(&["-listnetworkserviceorder".into()])?;
+        let mut services = output
+            .lines()
+            .filter_map(parse_service_order_line)
+            .collect::<Vec<_>>();
+        services.sort();
+        services.dedup();
+        Ok(services)
+    }
+
+    fn parse_service_order_line(line: &str) -> Option<String> {
+        let line = line.trim();
+        if !line.starts_with('(') {
+            return None;
+        }
+        let (_, service) = line.split_once(") ")?;
+        let service = service.trim();
+        if service.is_empty() || service.starts_with('*') {
+            None
+        } else {
+            Some(service.into())
+        }
+    }
+
+    fn read_dns_servers(service: &str) -> Result<Vec<String>, String> {
+        let output = run_networksetup(&["-getdnsservers".into(), service.into()])?;
+        Ok(parse_dns_servers(&output))
+    }
+
+    fn parse_dns_servers(output: &str) -> Vec<String> {
+        output
+            .lines()
+            .map(str::trim)
+            .filter(|value| value.parse::<IpAddr>().is_ok())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn set_dns_servers(service: &str, servers: &[String]) -> Result<(), String> {
+        let mut arguments = vec!["-setdnsservers".into(), service.into()];
+        if servers.is_empty() {
+            arguments.push("Empty".into());
+        } else {
+            arguments.extend(servers.iter().cloned());
+        }
+        run_networksetup(&arguments).map(|_| ())
+    }
+
+    fn verify_dns_override(service: &str) -> Result<(), String> {
+        verify_dns_servers(service, &[TUN_DNS_SERVER.into()])
+    }
+
+    fn verify_dns_servers(service: &str, expected: &[String]) -> Result<(), String> {
+        let actual = read_dns_servers(service)?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "macOS 网络服务“{service}”未接受 DNS 设置，当前值：{}",
+                actual.join(", ")
+            ))
+        }
+    }
+
+    fn run_networksetup(arguments: &[String]) -> Result<String, String> {
+        let output = Command::new(NETWORK_SETUP)
+            .args(arguments)
+            .output()
+            .map_err(|error| format!("执行 macOS DNS 配置命令失败：{error}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let detail = if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            };
+            Err(format!("配置 macOS 系统 DNS 失败：{detail}"))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parses_enabled_network_services_only() {
+            let output = "An asterisk (*) denotes that a network service is disabled.\n(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n(2) *Thunderbolt Bridge\n(Hardware Port: Thunderbolt Bridge, Device: bridge0)\n(3) USB 10/100/1000 LAN\n";
+            let services = output
+                .lines()
+                .filter_map(parse_service_order_line)
+                .collect::<Vec<_>>();
+            assert_eq!(services, ["Wi-Fi", "USB 10/100/1000 LAN"]);
+        }
+
+        #[test]
+        fn parses_only_valid_dns_addresses() {
+            assert_eq!(
+                parse_dns_servers("1.1.1.1\n2606:4700:4700::1111\n"),
+                ["1.1.1.1", "2606:4700:4700::1111"]
+            );
+            assert!(parse_dns_servers("There aren't any DNS Servers set.\n").is_empty());
+        }
+    }
+}
+
 #[cfg(windows)]
 fn register_platform_service(executable: &Path) -> Result<(), String> {
     let bin_path = format!("\"{}\" --tun-service", executable.to_string_lossy());
@@ -986,7 +1407,7 @@ fn register_platform_service(executable: &Path) -> Result<(), String> {
             "start=",
             "auto",
             "DisplayName=",
-            "Clash MG TUN Service",
+            "Clash MG Mihomo Service",
         ]),
         "创建 Windows TUN 服务",
     )?;
@@ -994,7 +1415,7 @@ fn register_platform_service(executable: &Path) -> Result<(), String> {
         Command::new("sc.exe").args([
             "description",
             SERVICE_NAME,
-            "为 Clash MG 提供无需重复提权的 TUN 网络能力",
+            "以系统权限常驻运行 Mihomo，并提供 TUN 网络能力",
         ]),
         "设置 Windows TUN 服务说明",
     );
@@ -1025,7 +1446,7 @@ fn register_platform_service(executable: &Path) -> Result<(), String> {
 fn register_platform_service(executable: &Path) -> Result<(), String> {
     let unit_path = PathBuf::from("/etc/systemd/system/clash-mg-tun.service");
     let unit = format!(
-        "[Unit]\nDescription=Clash MG TUN Service\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} --tun-service\nRestart=on-failure\nNoNewPrivileges=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths={}\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Clash MG Mihomo Service\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} --tun-service\nRestart=on-failure\nNoNewPrivileges=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths={}\n\n[Install]\nWantedBy=multi-user.target\n",
         executable.to_string_lossy(),
         service_install_dir().to_string_lossy(),
     );
@@ -1271,14 +1692,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_non_tun_service_config() {
-        assert!(validate_service_config("tun:\n  enable: false\n").is_err());
+    fn accepts_non_tun_service_config_without_requesting_tun_privileges() {
+        assert_eq!(
+            validate_service_config("tun:\n  enable: false\n"),
+            Ok(false)
+        );
     }
 
     #[test]
     fn accepts_tun_config_with_safe_subscription_provider() {
         let config = "tun:\n  enable: true\nproxy-providers:\n  demo:\n    type: file\n    path: ./subscriptions/demo.yaml\n";
-        assert!(validate_service_config(config).is_ok());
+        assert_eq!(validate_service_config(config), Ok(true));
+    }
+
+    #[test]
+    fn overrides_system_dns_only_when_tun_and_dns_override_are_enabled() {
+        assert!(should_override_system_dns(true, true));
+        assert!(!should_override_system_dns(true, false));
+        assert!(!should_override_system_dns(false, true));
+        assert!(!should_override_system_dns(false, false));
     }
 
     #[test]

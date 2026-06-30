@@ -184,11 +184,6 @@ export interface DelayResult {
   message?: string;
 }
 
-export interface MihomoCoreStatus {
-  exists: boolean;
-  path: string;
-}
-
 export interface MihomoCoreLaunchResult {
   started: boolean;
   controllerReady: boolean;
@@ -201,15 +196,6 @@ export interface AppUpdateInfo {
   updateAvailable: boolean;
   releaseUrl: string;
   releaseNotes: string;
-}
-
-export interface MihomoCoreDownloadProgress {
-  status: "resolving" | "downloading" | "extracting" | "completed" | "failed";
-  downloadedBytes: number;
-  totalBytes?: number;
-  speedBytesPerSecond: number;
-  percent: number;
-  message?: string;
 }
 
 export interface TunServiceStatus {

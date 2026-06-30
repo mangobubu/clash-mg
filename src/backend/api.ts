@@ -8,7 +8,6 @@ import type {
   DelayResult,
   LocalSubscriptionRefreshResult,
   MihomoCoreLaunchResult,
-  MihomoCoreStatus,
   RunningProcess,
   TunServiceStatus,
 } from "../types";
@@ -111,16 +110,6 @@ export async function deleteLocalSubscription(snapshot: AppData, subscriptionId:
 export async function testRuntimeProxyDelay(settings: AppSettings, nodeName: string): Promise<DelayResult> {
   if (!(await isTauriRuntime())) return { latency: 0, available: false, message: "浏览器预览环境无法访问 Mihomo 控制器" };
   return invoke<DelayResult>("test_proxy_delay", { settings, nodeName });
-}
-
-export async function getMihomoCoreStatus(): Promise<MihomoCoreStatus> {
-  if (!(await isTauriRuntime())) return { exists: true, path: "" };
-  return invoke<MihomoCoreStatus>("get_mihomo_core_status");
-}
-
-export async function downloadMihomoCore(): Promise<MihomoCoreStatus> {
-  if (!(await isTauriRuntime())) return { exists: true, path: "" };
-  return invoke<MihomoCoreStatus>("download_mihomo_core");
 }
 
 export async function startMihomoCore(settings: AppSettings): Promise<MihomoCoreLaunchResult> {

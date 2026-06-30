@@ -22,6 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button, Flex, Input, List, Menu, Modal, Popover, Segmented, Tag, Tooltip, Typography, message } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../store/useAppStore";
+import { useI18n } from "../i18n";
 import type { ThemeMode } from "../types";
 import { formatMemoryMegabytes, formatRuntimeByteRate } from "../utils/runtimeMetrics";
 import { isTauriRuntime } from "../utils/tauri";
@@ -47,6 +48,8 @@ export function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [notificationsRead, setNotificationsRead] = useState(false);
+  const { t } = useI18n();
+  const localizedNavigation = navigation.map((item) => ({ ...item, label: t(String(item.label)) }));
   const {
     themeMode,
     setThemeMode,
@@ -192,7 +195,7 @@ export function AppShell() {
           mode="inline"
           inlineCollapsed={sidebarCollapsed}
           selectedKeys={[selectedKey]}
-          items={navigation}
+          items={localizedNavigation}
           onClick={({ key }) => void handleNavigation(String(key))}
         />
         <div className="sidebar-spacer" />
@@ -221,7 +224,7 @@ export function AppShell() {
       <header className="topbar">
         <button className="global-search-trigger" onClick={() => setSearchOpen(true)}>
           <SearchOutlined />
-          <span>搜索节点 / 规则 / 日志</span>
+          <span>{t("搜索节点 / 规则 / 日志")}</span>
           <kbd>⌘K</kbd>
         </button>
         <Segmented
@@ -247,27 +250,27 @@ export function AppShell() {
         footer={null}
         width={680}
         className="search-modal"
-        title="全局搜索"
+        title={t("全局搜索")}
         destroyOnHidden
       >
         <Input
           autoFocus
           size="large"
           prefix={<SearchOutlined />}
-          placeholder="搜索节点名称、规则内容或日志..."
+          placeholder={t("搜索节点名称、规则内容或日志...")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           allowClear
         />
         {!query ? (
           <div className="search-help">
-            <Text type="secondary">输入关键词以搜索整个应用</Text>
+            <Text type="secondary">{t("输入关键词以搜索整个应用")}</Text>
             <Flex gap={8}><Tag>香港</Tag><Tag>openai.com</Tag><Tag>DNS</Tag></Flex>
           </div>
         ) : (
           <List
             className="search-results"
-            locale={{ emptyText: "没有找到匹配内容" }}
+            locale={{ emptyText: t("没有找到匹配内容") }}
             dataSource={results}
             renderItem={(item) => (
               <List.Item

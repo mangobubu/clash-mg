@@ -67,21 +67,28 @@ const toAppData = (state: AppState): AppData => ({
   runtime: state.runtime,
 });
 
+const persistCurrentState = async () => {
+  try {
+    await saveAppSnapshot(toAppData(useAppStore.getState()));
+  } catch (error) {
+    console.error("应用状态保存失败", error);
+    try {
+      const { data, backendAvailable } = await loadAppSnapshot();
+      applySnapshot(data, backendAvailable);
+      appendLog("ERROR", "运行配置", `设置应用失败，已恢复上次有效配置：${String(error)}`);
+      message.error({ content: `设置应用失败：${String(error)}`, duration: 6 });
+    } catch (reloadError) {
+      console.error("恢复上次有效配置失败", reloadError);
+    }
+    throw error;
+  }
+};
+
 const queuePersist = () => {
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => {
-    void saveAppSnapshot(toAppData(useAppStore.getState())).catch((error) => {
-      console.error("应用状态保存失败", error);
-      void loadAppSnapshot()
-        .then(({ data, backendAvailable }) => {
-          applySnapshot(data, backendAvailable);
-          appendLog("ERROR", "运行配置", `设置应用失败，已恢复上次有效配置：${String(error)}`);
-          message.error({ content: `设置应用失败：${String(error)}`, duration: 6 });
-        })
-        .catch((reloadError) => {
-          console.error("恢复上次有效配置失败", reloadError);
-        });
-    });
+    persistTimer = undefined;
+    void persistCurrentState().catch(() => undefined);
   }, 120);
 };
 
@@ -522,6 +529,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       ...(key === "navCollapsed" ? { sidebarCollapsed: Boolean(value) } : {}),
     }));
     queuePersist();
+  },
+  saveSettings: async () => {
+    window.clearTimeout(persistTimer);
+    persistTimer = undefined;
+    await persistCurrentState();
   },
   applyTunMode: async (enabled) => {
     const current = get();

@@ -195,6 +195,14 @@ export interface MihomoCoreLaunchResult {
   message: string;
 }
 
+export interface AppUpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  releaseNotes: string;
+}
+
 export interface MihomoCoreDownloadProgress {
   status: "resolving" | "downloading" | "extracting" | "completed" | "failed";
   downloadedBytes: number;
@@ -291,6 +299,7 @@ export interface AppState extends AppData {
   clearClosedConnections: () => void;
   clearLogs: () => void;
   updateSetting: (key: string, value: SettingValue) => void;
+  saveSettings: () => Promise<void>;
   applyTunMode: (enabled: boolean) => Promise<void>;
   resetSettings: () => void;
   addOverride: (scope: "domain" | "request" | "response", item: OverrideItem) => void;

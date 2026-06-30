@@ -3,9 +3,12 @@ use std::{collections::HashMap, fmt::Write, sync::Mutex};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod app_icon;
+mod app_update;
+mod autostart;
 mod core;
 mod core_log;
 mod defaults;
+mod firewall;
 mod mihomo;
 mod models;
 mod running_process;
@@ -180,6 +183,29 @@ async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Resu
             setting_u16(&snapshot.settings, "mixedPort", 7890),
         )?;
     }
+    let autostart_enabled = setting_bool(&snapshot.settings, "launchAtStartup", false);
+    let autostart_changed =
+        setting_bool(&previous.settings, "launchAtStartup", false) != autostart_enabled;
+    if autostart_changed {
+        autostart::apply(&app, autostart_enabled)?;
+    }
+    let firewall_enabled = setting_bool(&snapshot.settings, "firewall", false);
+    let firewall_changed = setting_bool(&previous.settings, "firewall", false) != firewall_enabled
+        || (firewall_enabled
+            && ["mixedPort", "httpPort", "socksPort"]
+                .iter()
+                .any(|key| previous.settings.get(*key) != snapshot.settings.get(*key)));
+    if firewall_changed {
+        if let Err(error) = firewall::apply(&snapshot.settings, firewall_enabled) {
+            if autostart_changed {
+                let _ = autostart::apply(
+                    &app,
+                    setting_bool(&previous.settings, "launchAtStartup", false),
+                );
+            }
+            return Err(error);
+        }
+    }
     if let Err(error) = storage::save_snapshot(&app, &snapshot) {
         let mut rollback_errors = Vec::new();
         if effective_config_changed {
@@ -196,6 +222,22 @@ async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Resu
                 rollback_errors.push(format!("恢复系统代理失败：{rollback_error}"));
             }
         }
+        if autostart_changed {
+            if let Err(rollback_error) = autostart::apply(
+                &app,
+                setting_bool(&previous.settings, "launchAtStartup", false),
+            ) {
+                rollback_errors.push(format!("恢复开机启动设置失败：{rollback_error}"));
+            }
+        }
+        if firewall_changed {
+            if let Err(rollback_error) = firewall::apply(
+                &previous.settings,
+                setting_bool(&previous.settings, "firewall", false),
+            ) {
+                rollback_errors.push(format!("恢复防火墙设置失败：{rollback_error}"));
+            }
+        }
         return Err(if rollback_errors.is_empty() {
             format!("保存应用状态失败：{error}；已恢复原运行状态")
         } else {
@@ -203,6 +245,11 @@ async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Resu
         });
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<app_update::AppUpdateInfo, String> {
+    app_update::check(app).await
 }
 
 #[tauri::command]
@@ -401,6 +448,38 @@ pub fn run() {
         .manage(ConnectionDetailSnapshots::default())
         .setup(|app| {
             tray::setup(app.handle())?;
+            let snapshot = storage::load_snapshot(app.handle()).unwrap_or_else(|error| {
+                eprintln!("读取启动设置失败，将使用默认设置：{error}");
+                defaults::default_snapshot()
+            });
+            if let Err(error) = autostart::apply(
+                app.handle(),
+                setting_bool(&snapshot.settings, "launchAtStartup", false),
+            ) {
+                eprintln!("同步开机启动设置失败：{error}");
+            }
+            if !setting_bool(&snapshot.settings, "silentLaunch", false) {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.show()?;
+                    window.set_focus()?;
+                }
+            }
+            let monitor_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let Ok(snapshot) = storage::load_snapshot(&monitor_app) else {
+                        continue;
+                    };
+                    match mihomo::enforce_runtime_connection_limit(snapshot.settings).await {
+                        Ok(closed) if closed > 0 => {
+                            eprintln!("连接数超过并发限制，已关闭 {closed} 条最新连接");
+                        }
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -425,6 +504,7 @@ pub fn run() {
             get_connection_detail_snapshot,
             get_app_snapshot,
             save_app_snapshot,
+            check_app_update,
             refresh_runtime_data,
             refresh_runtime_connections,
             select_proxy_node,

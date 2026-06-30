@@ -3,6 +3,7 @@ import { createEmptyAppData } from "../defaults/appDefaults";
 import type {
   AppData,
   AppSettings,
+  AppUpdateInfo,
   ConnectionRefreshResult,
   DelayResult,
   LocalSubscriptionRefreshResult,
@@ -31,6 +32,19 @@ export async function saveAppSnapshot(snapshot: AppData) {
   }
 
   localStorage.setItem(browserStorageKey, JSON.stringify(snapshot));
+}
+
+export async function checkAppUpdate(): Promise<AppUpdateInfo> {
+  if (!(await isTauriRuntime())) {
+    return {
+      currentVersion: "0.1.0",
+      latestVersion: "0.1.0",
+      updateAvailable: false,
+      releaseUrl: "https://github.com/mangobubu/clash-mg/releases",
+      releaseNotes: "",
+    };
+  }
+  return invoke<AppUpdateInfo>("check_app_update");
 }
 
 export async function refreshRuntimeSnapshot(snapshot: AppData) {
@@ -142,7 +156,21 @@ function loadBrowserSnapshot() {
   if (!raw) return fallback;
 
   try {
-    return { ...fallback, ...JSON.parse(raw) } as AppData;
+    const parsed = JSON.parse(raw) as Partial<AppData>;
+    const storedSettings = { ...(parsed.settings ?? {}) };
+    if (storedSettings.coreIpv6 !== undefined) {
+      storedSettings.ipv6 = storedSettings.coreIpv6;
+      delete storedSettings.coreIpv6;
+    }
+    if (storedSettings.language === undefined && storedSettings.uiLanguage !== undefined) {
+      storedSettings.language = storedSettings.uiLanguage;
+    }
+    delete storedSettings.uiLanguage;
+    return {
+      ...fallback,
+      ...parsed,
+      settings: { ...fallback.settings, ...storedSettings },
+    } as AppData;
   } catch {
     return fallback;
   }

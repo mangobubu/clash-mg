@@ -1,12 +1,16 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { App as AntApp, ConfigProvider, Spin, theme } from "antd";
+import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
+import zhTW from "antd/locale/zh_TW";
 import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { AppUpdateChecker } from "./components/AppUpdateChecker";
 import { MihomoCoreBootstrap } from "./components/MihomoCoreBootstrap";
 import { TunServiceProvider } from "./components/TunServiceControl";
 import { useAppStore } from "./store/useAppStore";
+import { normalizeLocale } from "./i18n";
 import { isTauriRuntime } from "./utils/tauri";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
@@ -88,11 +92,13 @@ export default function App() {
   }, []);
 
   const isDark = themeMode === "dark" || (themeMode === "system" && systemDark);
+  const appLocale = normalizeLocale(settings.language);
   useEffect(() => {
     document.documentElement.dataset.theme = isDark ? "dark" : "light";
+    document.documentElement.lang = appLocale;
     document.documentElement.style.setProperty("--accent", accent);
     document.documentElement.style.setProperty("--ui-scale", String(Number.parseInt(String(settings.uiScale ?? "100%"), 10) / 100));
-  }, [accent, isDark, settings.uiScale]);
+  }, [accent, appLocale, isDark, settings.uiScale]);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -111,7 +117,7 @@ export default function App() {
 
   return (
     <ConfigProvider
-      locale={zhCN}
+      locale={appLocale === "en" ? enUS : appLocale === "zh-TW" ? zhTW : zhCN}
       theme={{
         algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
@@ -134,6 +140,7 @@ export default function App() {
     >
       <AntApp>
         <TunServiceProvider>
+          {!isStandaloneWindow && <AppUpdateChecker />}
           {!isStandaloneWindow && <MihomoCoreBootstrap />}
           <HashRouter>
             <Suspense fallback={<div className="route-loading"><Spin size="large" /></div>}>

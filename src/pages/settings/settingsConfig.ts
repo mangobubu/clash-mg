@@ -72,7 +72,7 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "core", label: "选择内核", control: "select", options: ["Clash Meta", "Clash Premium"] },
         { key: "coreStartTiming", label: "启动核心时机", control: "select", options: ["系统启动时自动运行", "应用打开时运行", "手动启动"] },
         { key: "coreMode", label: "内核工作模式", control: "select", options: ["规则模式", "全局模式", "直连模式"] },
-        { key: "coreIpv6", label: "IPv6 支持", description: "启用后将支持 IPv6 连接与解析", control: "switch" },
+        { key: "ipv6", label: "IPv6 支持", description: "启用后将支持 IPv6 连接与解析", control: "switch" },
       ] },
       { title: "高级设置", fields: [
         { key: "logLevel", label: "日志级别", control: "select", options: ["调试 (Debug)", "信息 (Info)", "警告 (Warning)", "错误 (Error)"] },
@@ -135,7 +135,7 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "uiScale", label: "界面缩放", control: "select", options: ["90%", "100%", "110%", "125%"] },
         { key: "accent", label: "主题色", control: "accent" },
         { key: "roundedStyle", label: "圆角风格", control: "select", options: ["紧凑", "标准", "圆润"] },
-        { key: "uiLanguage", label: "语言", control: "select", options: ["简体中文", "繁體中文", "English"] },
+        { key: "language", label: "语言", control: "select", options: ["简体中文", "繁體中文", "English"] },
         { key: "glassEffect", label: "毛玻璃效果", control: "switch" },
       ] },
       { title: "布局与导航", fields: [

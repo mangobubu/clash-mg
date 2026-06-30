@@ -24,6 +24,13 @@ const DELAY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TRAFFIC_HISTORY_BUCKET_MS: i64 = 5 * 60 * 1000;
 const TRAFFIC_HISTORY_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
+fn setting_bool(settings: &SettingsMap, key: &str, fallback: bool) -> bool {
+    settings
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(fallback)
+}
+
 pub struct MihomoClient {
     base_url: String,
     secret: Option<String>,
@@ -228,10 +235,14 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
 
     match client.get_json("/proxies").await {
         Ok(proxies) => {
-            for (group_name, proxy_name) in apply_proxies(&mut snapshot, &proxies) {
-                let path = format!("/proxies/{}", encode_component(&group_name));
-                if let Err(error) = client.put_json(&path, json!({ "name": proxy_name })).await {
-                    errors.push(format!("恢复代理组“{group_name}”选择失败：{error}"));
+            let selection_corrections = apply_proxies(&mut snapshot, &proxies);
+            if setting_bool(&snapshot.settings, "autoConnect", true) {
+                for (group_name, proxy_name) in selection_corrections {
+                    let path = format!("/proxies/{}", encode_component(&group_name));
+                    if let Err(error) = client.put_json(&path, json!({ "name": proxy_name })).await
+                    {
+                        errors.push(format!("恢复代理组“{group_name}”选择失败：{error}"));
+                    }
                 }
             }
         }
@@ -239,7 +250,22 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
     }
 
     match client.get_json("/connections").await {
-        Ok(connections) => apply_connections(&mut snapshot, &mut runtime, &connections),
+        Ok(connections) => {
+            match enforce_connection_limit(&client, &snapshot.settings, connections).await {
+                Ok((connections, closed)) => {
+                    apply_connections(&mut snapshot, &mut runtime, &connections);
+                    if closed > 0 {
+                        push_runtime_log(
+                            &mut snapshot,
+                            "WARNING",
+                            "连接",
+                            &format!("连接数超过并发限制，已关闭 {closed} 条最新连接"),
+                        );
+                    }
+                }
+                Err(error) => errors.push(format!("连接并发限制执行失败：{error}")),
+            }
+        }
         Err(error) => errors.push(format!("连接读取失败：{error}")),
     }
 
@@ -286,6 +312,7 @@ pub async fn refresh_connections(
     let client = MihomoClient::from_settings(&settings)
         .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
     let value = client.get_json("/connections").await?;
+    let (value, _) = enforce_connection_limit(&client, &settings, value).await?;
     let (upload_total, download_total) = connection_totals(&value);
 
     Ok(ConnectionRefreshResult {
@@ -293,6 +320,72 @@ pub async fn refresh_connections(
         upload_total: format_bytes(upload_total),
         download_total: format_bytes(download_total),
     })
+}
+
+pub async fn enforce_runtime_connection_limit(settings: SettingsMap) -> Result<usize, String> {
+    let limit = connection_limit(&settings);
+    if limit == 0 {
+        return Ok(0);
+    }
+    let client = MihomoClient::from_settings(&settings)
+        .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
+    let value = client.get_json("/connections").await?;
+    let (_, closed) = enforce_connection_limit(&client, &settings, value).await?;
+    Ok(closed)
+}
+
+fn connection_limit(settings: &SettingsMap) -> usize {
+    settings
+        .get("maxConnections")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+async fn enforce_connection_limit(
+    client: &MihomoClient,
+    settings: &SettingsMap,
+    value: Value,
+) -> Result<(Value, usize), String> {
+    let limit = connection_limit(settings);
+    if limit == 0 {
+        return Ok((value, 0));
+    }
+
+    let ids = overflow_connection_ids(&value, limit);
+    for id in &ids {
+        let path = format!("/connections/{}", encode_component(id));
+        client.delete(&path).await?;
+    }
+    if ids.is_empty() {
+        Ok((value, 0))
+    } else {
+        Ok((client.get_json("/connections").await?, ids.len()))
+    }
+}
+
+fn overflow_connection_ids(value: &Value, limit: usize) -> Vec<String> {
+    let mut connections = value
+        .get("connections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|connection| {
+            Some((
+                connection
+                    .get("start")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                connection.get("id").and_then(Value::as_str)?.to_string(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    connections.sort_by(|left, right| left.0.cmp(right.0));
+    connections
+        .into_iter()
+        .skip(limit)
+        .map(|(_, id)| id)
+        .collect()
 }
 
 pub async fn select_proxy_node(
@@ -1422,5 +1515,19 @@ mod tests {
             group.current_node_id.as_deref(),
             Some(stable_id("node", "香港节点").as_str())
         );
+    }
+
+    #[test]
+    fn closes_newest_connections_over_global_limit() {
+        let value = json!({
+            "connections": [
+                { "id": "oldest", "start": "2026-01-01T00:00:00Z" },
+                { "id": "newest", "start": "2026-01-01T00:02:00Z" },
+                { "id": "middle", "start": "2026-01-01T00:01:00Z" }
+            ]
+        });
+
+        assert_eq!(overflow_connection_ids(&value, 2), vec!["newest"]);
+        assert!(overflow_connection_ids(&value, 0).len() == 3);
     }
 }

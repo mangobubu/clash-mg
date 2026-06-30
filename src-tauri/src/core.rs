@@ -44,7 +44,7 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "externalController",
     "controllerPort",
     "uiSecret",
-    "coreIpv6",
+    "ipv6",
     "unifiedDelay",
     "tunMode",
     "networkStack",
@@ -1042,7 +1042,7 @@ pub(crate) fn generated_config_content(settings: &SettingsMap) -> String {
         yaml_string(&map_log_level(&setting_string(settings, "logLevel", "信息 (Info)"))),
         yaml_string(&controller_address(settings)),
         yaml_string(&setting_string(settings, "uiSecret", "")),
-        setting_bool(settings, "coreIpv6", false),
+        setting_bool(settings, "ipv6", false),
         setting_bool(settings, "unifiedDelay", true),
         yaml_string(&map_process_mode(&setting_string(settings, "processMode", "Always"))),
     )

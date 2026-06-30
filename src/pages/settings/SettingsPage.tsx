@@ -36,6 +36,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { PageHeader, Panel, SaveSuccess, SummaryFooter } from "../../components/Common";
 import { TunServiceControl } from "../../components/TunServiceControl";
 import { useAppStore } from "../../store/useAppStore";
+import { useI18n } from "../../i18n";
 import type { OverrideItem, SettingValue, ThemeMode } from "../../types";
 import { settingDefinitions } from "./settingsConfig";
 import type { SettingField, SettingSection } from "./settingsConfig";
@@ -91,41 +92,48 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const { section = "general" } = useParams<{ section: string }>();
   const activeSection = sectionMenu.some((item) => item.key === section) ? section : "general";
+  const { locale, t } = useI18n();
+  const localizedSectionMenu = sectionMenu.map((item) => ({ ...item, label: t(String(item.label)) }));
   const [lastSaved, setLastSaved] = useState("刚刚");
-  const { settings, updateSetting, resetSettings, themeMode, setThemeMode, accent, setAccent } = useAppStore();
+  const { settings, updateSetting, saveSettings, resetSettings, themeMode, setThemeMode, accent, setAccent } = useAppStore();
   const definition = settingDefinitions[activeSection];
 
-  const save = () => {
-    setLastSaved(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
-    message.success("设置已保存并应用");
+  const save = async () => {
+    try {
+      await saveSettings();
+      setLastSaved(new Date().toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }));
+      message.success(t("设置已保存并应用"));
+    } catch {
+      // 保存失败和配置回滚提示由状态层统一处理。
+    }
   };
 
   const reset = () => Modal.confirm({
-    title: "重置全部设置？", content: "将恢复应用默认配置，页面中的修改会被覆盖。", okText: "重置", cancelText: "取消",
-    onOk: () => { resetSettings(); message.success("已恢复默认设置"); },
+    title: t("重置全部设置？"), content: t("将恢复应用默认配置，页面中的修改会被覆盖。"), okText: t("重置"), cancelText: t("取消"),
+    onOk: () => { resetSettings(); message.success(t("已恢复默认设置")); },
   });
 
-  const title = activeSection === "dns" ? "DNS 设置" : activeSection === "override" ? "覆写设置" : definition.title;
-  const description = activeSection === "dns" ? "管理 DNS 服务器、增强模式与解析规则。" : activeSection === "override" ? "管理域名、请求头与响应头覆写规则。" : definition.description;
+  const title = t(activeSection === "dns" ? "DNS 设置" : activeSection === "override" ? "覆写设置" : definition.title);
+  const description = t(activeSection === "dns" ? "管理 DNS 服务器、增强模式与解析规则。" : activeSection === "override" ? "管理域名、请求头与响应头覆写规则。" : definition.description);
 
   return (
     <div className="page-stack settings-page">
       <div className="settings-layout">
         <aside className="settings-sidebar panel">
-          <Title level={2}>设置</Title>
-          <Text type="secondary">管理核心、网络、DNS 与界面行为设置。</Text>
-          <Menu selectedKeys={[activeSection]} items={sectionMenu} onClick={({ key }) => navigate(`/settings/${key}`)} />
+          <Title level={2}>{t("设置")}</Title>
+          <Text type="secondary">{t("管理核心、网络、DNS 与界面行为设置。")}</Text>
+          <Menu selectedKeys={[activeSection]} items={localizedSectionMenu} onClick={({ key }) => navigate(`/settings/${key}`)} />
         </aside>
         <div className="settings-content">
-          <PageHeader title={title} description={description} actions={<><Button icon={<RedoOutlined />} onClick={reset}>重置默认</Button><Button type="primary" icon={<SaveOutlined />} onClick={save}>保存设置</Button></>} />
+          <PageHeader title={title} description={description} actions={<><Button icon={<RedoOutlined />} onClick={reset}>{t("重置默认")}</Button><Button type="primary" icon={<SaveOutlined />} onClick={() => void save()}>{t("保存设置")}</Button></>} />
           {activeSection === "override" ? <OverrideSettings /> : (
             <>
               {(activeSection === "dns" ? dnsSections : definition.sections).map((settingSection) => (
-                <Panel key={settingSection.title} title={<Title level={3}>{settingSection.title}</Title>} className="settings-section">
-                  {settingSection.description && <Text type="secondary">{settingSection.description}</Text>}
+                <Panel key={settingSection.title} title={<Title level={3}>{t(settingSection.title)}</Title>} className="settings-section">
+                  {settingSection.description && <Text type="secondary">{t(settingSection.description)}</Text>}
                   <div className="settings-fields">
                     {settingSection.fields.map((field) => (
-                      <SettingFieldControl key={field.key} field={field} value={field.key === "accent" ? accent : settings[field.key]} onChange={(value) => field.key === "accent" ? setAccent(String(value)) : updateSetting(field.key, value)} themeMode={themeMode} setThemeMode={setThemeMode} />
+                      <SettingFieldControl key={field.key} field={field} value={field.key === "accent" ? accent : settings[field.key]} onChange={(value) => field.key === "accent" ? setAccent(String(value)) : updateSetting(field.key, value)} themeMode={themeMode} setThemeMode={setThemeMode} translate={t} />
                     ))}
                   </div>
                 </Panel>
@@ -139,22 +147,22 @@ export function SettingsPage() {
   );
 }
 
-function SettingFieldControl({ field, value, onChange, themeMode, setThemeMode }: { field: SettingField; value: SettingValue | undefined; onChange: (value: SettingValue) => void; themeMode: ThemeMode; setThemeMode: (mode: ThemeMode) => void }) {
+function SettingFieldControl({ field, value, onChange, themeMode, setThemeMode, translate }: { field: SettingField; value: SettingValue | undefined; onChange: (value: SettingValue) => void; themeMode: ThemeMode; setThemeMode: (mode: ThemeMode) => void; translate: (value: string) => string }) {
   let control: React.ReactNode;
   if (field.key === "tunMode") control = <TunServiceControl checked={Boolean(value)} />;
   else if (field.control === "switch") control = <Switch checked={Boolean(value)} onChange={onChange} />;
-  else if (field.control === "select") control = <Select value={String(value ?? "")} onChange={onChange} options={field.options?.map((option) => ({ label: option, value: option }))} />;
+  else if (field.control === "select") control = <Select value={String(value ?? "")} onChange={onChange} options={field.options?.map((option) => ({ label: translate(option), value: option }))} />;
   else if (field.control === "number") control = <InputNumber value={Number(value ?? 0)} min={field.min} max={field.max} onChange={(next) => onChange(next ?? 0)} />;
   else if (field.control === "password") control = <Input.Password value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} />;
   else if (field.control === "textarea") control = <Input.TextArea value={String(value ?? "")} rows={3} onChange={(event) => onChange(event.target.value)} />;
   else if (field.control === "tags") control = <Select mode="tags" value={Array.isArray(value) ? value : []} onChange={onChange} tokenSeparators={[",", " "]} />;
-  else if (field.control === "theme") control = <Segmented block value={themeMode} options={[{ label: "浅色", value: "light" }, { label: "深色", value: "dark" }, { label: "跟随系统", value: "system" }]} onChange={(next) => { setThemeMode(next as ThemeMode); onChange(next === "light" ? "浅色" : next === "dark" ? "深色" : "跟随系统"); }} />;
+  else if (field.control === "theme") control = <Segmented block value={themeMode} options={[{ label: translate("浅色"), value: "light" }, { label: translate("深色"), value: "dark" }, { label: translate("跟随系统"), value: "system" }]} onChange={(next) => { setThemeMode(next as ThemeMode); onChange(next === "light" ? "浅色" : next === "dark" ? "深色" : "跟随系统"); }} />;
   else if (field.control === "accent") control = <div className="accent-picker">{["#12b8c4", "#18b368", "#9254de", "#597ef7", "#36a8e8", "#fa8c16", "#eb5a67", "#b8c0cc"].map((color) => <button key={color} style={{ background: color }} className={value === color ? "selected" : ""} onClick={() => onChange(color)} aria-label={`主题色 ${color}`} />)}</div>;
   else control = <Input value={String(value ?? "")} placeholder={field.placeholder} onChange={(event) => onChange(event.target.value)} />;
 
   return (
     <div className={`setting-field${field.span === 2 ? " span-two" : ""}${field.control === "switch" ? " is-switch" : ""}`}>
-      <div className="setting-label"><strong>{field.label}</strong>{field.description && <Text type="secondary">{field.description}</Text>}</div>
+      <div className="setting-label"><strong>{translate(field.label)}</strong>{field.description && <Text type="secondary">{translate(field.description)}</Text>}</div>
       <div className="setting-control">{control}</div>
     </div>
   );
@@ -162,14 +170,19 @@ function SettingFieldControl({ field, value, onChange, themeMode, setThemeMode }
 
 function SettingsFooter({ section, lastSaved }: { section: string; lastSaved: string }) {
   const { runtime, settings } = useAppStore();
+  const { t } = useI18n();
   const items = useMemo(() => {
     if (section === "dns") return [{ icon: <SafetyCertificateOutlined />, label: "当前模式", value: String(settings.enhancedMode ?? "Fake-IP") }, { icon: <GlobalOutlined />, label: "当前监听地址", value: String(settings.dnsListen ?? "0.0.0.0:1053") }, { icon: <FolderOpenOutlined />, label: "默认 DNS 数量", value: String(Array.isArray(settings.defaultDns) ? settings.defaultDns.length : 0) }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     if (section === "network" || section === "core") return [{ icon: <SafetyCertificateOutlined />, label: "内核 TUN", value: runtime.tunEnabled ? "运行中" : "未运行" }, { icon: <SettingOutlined />, label: "实际进程识别", value: runtime.processMode || "未知" }, { icon: <FolderOpenOutlined />, label: "控制器", value: runtime.controllerUrl }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
-    if (section === "interface") return [{ icon: <DesktopOutlined />, label: "当前主题", value: String(settings.uiTheme ?? "浅色") }, { icon: <GlobalOutlined />, label: "当前语言", value: String(settings.uiLanguage ?? "简体中文") }, { icon: <SettingOutlined />, label: "布局密度", value: String(settings.listDensity ?? "舒适") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
+    if (section === "interface") return [{ icon: <DesktopOutlined />, label: "当前主题", value: String(settings.uiTheme ?? "浅色") }, { icon: <GlobalOutlined />, label: "当前语言", value: String(settings.language ?? "简体中文") }, { icon: <SettingOutlined />, label: "布局密度", value: String(settings.listDensity ?? "舒适") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     if (section === "log") return [{ icon: <FileTextOutlined />, label: "当前级别", value: String(settings.logLevel ?? "Info") }, { icon: <CheckCircleOutlined />, label: "文件写入", value: settings.logToFile ? "已启用" : "未启用" }, { icon: <FolderOpenOutlined />, label: "日志路径", value: String(settings.logPath ?? "~/logs/clash-mg") }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
     return [{ icon: <CheckCircleOutlined />, label: "状态", value: <SaveSuccess /> }, { icon: <SafetyCertificateOutlined />, label: "当前核心", value: runtime.coreVersion }, { icon: <FolderOpenOutlined />, label: "控制器", value: runtime.controllerUrl }, { icon: <ClockCircleOutlined />, label: "最后保存", value: lastSaved }];
   }, [lastSaved, runtime.controllerUrl, runtime.coreVersion, runtime.processMode, runtime.tunEnabled, section, settings]);
-  return <SummaryFooter items={items} />;
+  return <SummaryFooter items={items.map((item) => ({
+    ...item,
+    label: t(item.label),
+    value: typeof item.value === "string" ? t(item.value) : item.value,
+  }))} />;
 }
 
 function OverrideSettings() {

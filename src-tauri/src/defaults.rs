@@ -32,7 +32,6 @@ pub fn default_settings() -> SettingsMap {
         ("core".into(), json!("Mihomo")),
         ("coreStartTiming".into(), json!("手动启动")),
         ("coreMode".into(), json!("规则模式")),
-        ("coreIpv6".into(), json!(false)),
         ("logLevel".into(), json!("信息 (Info)")),
         ("udpForward".into(), json!(true)),
         ("debugPort".into(), json!(9090)),
@@ -91,7 +90,6 @@ pub fn default_settings() -> SettingsMap {
         ("uiScale".into(), json!("100%")),
         ("roundedStyle".into(), json!("标准")),
         ("glassEffect".into(), json!(true)),
-        ("uiLanguage".into(), json!("简体中文")),
         ("defaultPage".into(), json!("总览")),
         ("navCollapsed".into(), json!(false)),
         ("compactMode".into(), json!(false)),
@@ -130,6 +128,16 @@ pub fn default_settings() -> SettingsMap {
 }
 
 pub fn merge_default_settings(settings: &mut SettingsMap) {
+    if let Some(value) = settings.remove("coreIpv6") {
+        settings.insert("ipv6".into(), value);
+    }
+    if !settings.contains_key("language") {
+        if let Some(value) = settings.remove("uiLanguage") {
+            settings.insert("language".into(), value);
+        }
+    } else {
+        settings.remove("uiLanguage");
+    }
     if !settings.contains_key("processModeDefaultV2") {
         if settings
             .get("processMode")
@@ -187,5 +195,27 @@ pub fn value_to_string(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn migrates_duplicate_ipv6_and_language_settings() {
+        let mut settings = SettingsMap::from([
+            ("coreIpv6".into(), json!(true)),
+            ("uiLanguage".into(), json!("English")),
+        ]);
+
+        merge_default_settings(&mut settings);
+
+        assert_eq!(settings.get("ipv6"), Some(&json!(true)));
+        assert_eq!(settings.get("language"), Some(&json!("English")));
+        assert!(!settings.contains_key("coreIpv6"));
+        assert!(!settings.contains_key("uiLanguage"));
     }
 }

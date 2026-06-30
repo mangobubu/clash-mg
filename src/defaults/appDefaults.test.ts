@@ -7,6 +7,7 @@ describe("应用默认状态", () => {
 
     expect(data.nodes).toHaveLength(0);
     expect(data.groups).toHaveLength(0);
+    expect(data.nodeDialerOverrides).toHaveLength(0);
     expect(data.subscriptions).toHaveLength(0);
     expect(data.rules).toHaveLength(0);
     expect(data.connections).toHaveLength(0);

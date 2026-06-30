@@ -32,6 +32,7 @@ const refreshIntervalOptions = [
   { label: "5 秒", value: 5000 },
   { label: "10 秒", value: 10000 },
 ];
+const runtimeRefreshInterval = 5_000;
 
 export function ConnectionsPage() {
   const [search, setSearch] = useState("");
@@ -48,17 +49,24 @@ export function ConnectionsPage() {
   const [connectionRates, setConnectionRates] = useState<Record<string, ConnectionRate>>({});
   const trafficSampleRef = useRef<ConnectionTrafficSample | undefined>(undefined);
   const refreshingRef = useRef(false);
+  const lastRuntimeRefreshRef = useRef(0);
   const { connections, closeConnections, clearClosedConnections, refreshConnections, refreshRuntimeData } = useAppStore();
 
   const refreshConnectionData = useCallback(async () => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     try {
-      await refreshConnections();
+      const now = Date.now();
+      if (now - lastRuntimeRefreshRef.current >= runtimeRefreshInterval) {
+        lastRuntimeRefreshRef.current = now;
+        await refreshRuntimeData();
+      } else {
+        await refreshConnections();
+      }
     } finally {
       refreshingRef.current = false;
     }
-  }, [refreshConnections]);
+  }, [refreshConnections, refreshRuntimeData]);
 
   useEffect(() => {
     void refreshConnectionData();

@@ -233,11 +233,13 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
         Err(error) => errors.push(format!("运行配置读取失败：{error}")),
     }
 
+    let mut changed_automatic_groups = Vec::new();
     match client.get_json("/proxies").await {
         Ok(proxies) => {
-            let selection_corrections = apply_proxies(&mut snapshot, &proxies);
+            let proxy_sync = apply_proxies(&mut snapshot, &proxies);
+            changed_automatic_groups = proxy_sync.changed_automatic_groups;
             if setting_bool(&snapshot.settings, "autoConnect", true) {
-                for (group_name, proxy_name) in selection_corrections {
+                for (group_name, proxy_name) in proxy_sync.manual_corrections {
                     let path = format!("/proxies/{}", encode_component(&group_name));
                     if let Err(error) = client.put_json(&path, json!({ "name": proxy_name })).await
                     {
@@ -251,19 +253,40 @@ pub async fn refresh_runtime_data(mut snapshot: AppSnapshot) -> AppSnapshot {
 
     match client.get_json("/connections").await {
         Ok(connections) => {
-            match enforce_connection_limit(&client, &snapshot.settings, connections).await {
-                Ok((connections, closed)) => {
-                    apply_connections(&mut snapshot, &mut runtime, &connections);
-                    if closed > 0 {
-                        push_runtime_log(
-                            &mut snapshot,
-                            "WARNING",
-                            "连接",
-                            &format!("连接数超过并发限制，已关闭 {closed} 条最新连接"),
-                        );
+            let connections = close_connections_for_changed_groups(
+                &client,
+                connections,
+                &changed_automatic_groups,
+            )
+            .await;
+            match connections {
+                Ok((connections, switched_closed)) => {
+                    match enforce_connection_limit(&client, &snapshot.settings, connections).await {
+                        Ok((connections, closed)) => {
+                            apply_connections(&mut snapshot, &mut runtime, &connections);
+                            if switched_closed > 0 {
+                                push_runtime_log(
+                                    &mut snapshot,
+                                    "INFO",
+                                    "代理",
+                                    &format!(
+                                        "自动代理组切换后已关闭 {switched_closed} 条旧连接，新连接将使用当前节点"
+                                    ),
+                                );
+                            }
+                            if closed > 0 {
+                                push_runtime_log(
+                                    &mut snapshot,
+                                    "WARNING",
+                                    "连接",
+                                    &format!("连接数超过并发限制，已关闭 {closed} 条最新连接"),
+                                );
+                            }
+                        }
+                        Err(error) => errors.push(format!("连接并发限制执行失败：{error}")),
                     }
                 }
-                Err(error) => errors.push(format!("连接并发限制执行失败：{error}")),
+                Err(error) => errors.push(format!("自动代理组切换后的连接清理失败：{error}")),
             }
         }
         Err(error) => errors.push(format!("连接读取失败：{error}")),
@@ -353,6 +376,45 @@ async fn enforce_connection_limit(
     }
 
     let ids = overflow_connection_ids(&value, limit);
+    for id in &ids {
+        let path = format!("/connections/{}", encode_component(id));
+        client.delete(&path).await?;
+    }
+    if ids.is_empty() {
+        Ok((value, 0))
+    } else {
+        Ok((client.get_json("/connections").await?, ids.len()))
+    }
+}
+
+async fn close_connections_for_changed_groups(
+    client: &MihomoClient,
+    value: Value,
+    group_names: &[String],
+) -> Result<(Value, usize), String> {
+    if group_names.is_empty() {
+        return Ok((value, 0));
+    }
+
+    let ids = value
+        .get("connections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|connection| {
+            connection
+                .get("chains")
+                .and_then(Value::as_array)
+                .is_some_and(|chains| {
+                    chains
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|chain| group_names.iter().any(|group_name| group_name == chain))
+                })
+        })
+        .filter_map(|connection| proxy_string(connection, "id"))
+        .collect::<Vec<_>>();
+
     for id in &ids {
         let path = format!("/connections/{}", encode_component(id));
         client.delete(&path).await?;
@@ -559,9 +621,15 @@ fn disconnected_runtime(message: &str, controller_url: &str) -> RuntimeInfo {
     }
 }
 
-fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, String)> {
+#[derive(Default)]
+struct ProxySyncResult {
+    manual_corrections: Vec<(String, String)>,
+    changed_automatic_groups: Vec<String>,
+}
+
+fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> ProxySyncResult {
     let Some(proxies) = value.get("proxies").and_then(Value::as_object) else {
-        return Vec::new();
+        return ProxySyncResult::default();
     };
 
     let local_groups_by_name = snapshot
@@ -638,7 +706,7 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
 
     let mut runtime_groups = Vec::new();
     let mut runtime_group_names = HashSet::new();
-    let mut selection_corrections = Vec::new();
+    let mut sync_result = ProxySyncResult::default();
     for (name, proxy) in proxies {
         if !is_group_proxy(name, proxy) {
             continue;
@@ -668,12 +736,20 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
             .filter_map(|group_name| name_to_group_id.get(group_name).cloned())
             .filter(|member_id| member_id != &group_id)
             .collect::<Vec<_>>();
-        let current_node_id = previous_selection
+        let member_ids = all_names
+            .iter()
+            .filter_map(|member_name| {
+                name_to_node_id
+                    .get(member_name)
+                    .or_else(|| name_to_group_id.get(member_name))
+                    .filter(|member_id| *member_id != &group_id)
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        let previous_current_id = previous_selection
             .get(&group_id)
-            .filter(|member_id| node_ids.contains(member_id) || group_ids.contains(member_id))
-            .cloned()
-            .or_else(|| node_ids.first().cloned())
-            .or_else(|| group_ids.first().cloned());
+            .filter(|member_id| member_ids.contains(member_id))
+            .cloned();
         let runtime_current_id = proxy_string(proxy, "now").and_then(|current_name| {
             name_to_node_id
                 .get(&current_name)
@@ -681,16 +757,38 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
                 .cloned()
         });
         let group_type = map_group_type(&proxy_string(proxy, "type").unwrap_or_default(), name);
-        let allow_manual =
-            group_type != "URL-Test" && group_type != "Direct" && group_type != "Block";
-        if allow_manual && current_node_id != runtime_current_id {
+        let allow_manual = group_type == "Selector";
+        let should_restore_manual_selection = allow_manual
+            && previous_current_id.is_some()
+            && previous_current_id != runtime_current_id;
+        if !allow_manual
+            && previous_current_id.is_some()
+            && runtime_current_id.is_some()
+            && previous_current_id != runtime_current_id
+        {
+            sync_result.changed_automatic_groups.push(name.clone());
+        }
+        let current_node_id = if allow_manual {
+            previous_current_id
+                .clone()
+                .or_else(|| runtime_current_id.clone())
+                .or_else(|| member_ids.first().cloned())
+        } else {
+            runtime_current_id
+                .clone()
+                .or(previous_current_id)
+                .or_else(|| member_ids.first().cloned())
+        };
+        if should_restore_manual_selection {
             if let Some(target_name) = current_node_id.as_ref().and_then(|target_id| {
                 all_names.iter().find(|member_name| {
                     name_to_node_id.get(*member_name) == Some(target_id)
                         || name_to_group_id.get(*member_name) == Some(target_id)
                 })
             }) {
-                selection_corrections.push((name.clone(), target_name.clone()));
+                sync_result
+                    .manual_corrections
+                    .push((name.clone(), target_name.clone()));
             }
         }
 
@@ -726,7 +824,7 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> Vec<(String, Stri
     });
     snapshot.nodes.extend(managed_nodes);
     snapshot.groups.extend(runtime_groups);
-    selection_corrections
+    sync_result
 }
 
 fn apply_connections(snapshot: &mut AppSnapshot, runtime: &mut RuntimeInfo, value: &Value) {
@@ -986,12 +1084,22 @@ fn enrich_connection_route(connection: &mut Connection, nodes: &[ProxyNode]) {
         })
         .flatten();
 
-    if let Some(exit_node) = internal_target_node.or_else(|| route_nodes.first().copied()) {
+    let chained_exit_node = route_nodes.iter().copied().find(|node| {
+        node.dialer_proxy
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    if let Some(exit_node) = internal_target_node
+        .or(chained_exit_node)
+        .or_else(|| route_nodes.first().copied())
+    {
         connection.node = exit_node.name.clone();
     }
     connection.entry_node = route_nodes
-        .last()
-        .filter(|entry_node| entry_node.name != connection.node)
+        .iter()
+        .rev()
+        .copied()
+        .find(|entry_node| entry_node.name != connection.node)
         .map(|entry_node| entry_node.name.clone())
         .unwrap_or_default();
 
@@ -1345,6 +1453,28 @@ mod tests {
     }
 
     #[test]
+    fn identifies_dialer_exit_when_runtime_chain_lists_the_entry_first() {
+        let nodes = vec![
+            test_node("AT&T尔湾", "us.example.com", 443, Some("美国ATT家宽")),
+            test_node("美国-Vultr", "entry.example.com", 443, None),
+        ];
+        let mut connection = map_connection(&json!({
+            "id": "connection-5",
+            "metadata": {
+                "process": "Microsoft Edge Helper",
+                "host": "chatgpt.com",
+                "destinationPort": 443
+            },
+            "chains": ["AI", "AT&T尔湾", "美国ATT家宽", "自动选择", "美国-Vultr"]
+        }));
+
+        enrich_connection_route(&mut connection, &nodes);
+
+        assert_eq!(connection.node, "AT&T尔湾");
+        assert_eq!(connection.entry_node, "美国-Vultr");
+    }
+
+    #[test]
     fn excludes_builtin_special_proxies_from_nodes() {
         let mut snapshot = default_snapshot();
         let proxies = json!({
@@ -1443,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_nested_proxy_groups_and_defaults_to_first_node() {
+    fn maps_nested_proxy_groups_and_uses_runtime_selection_on_first_sync() {
         let mut snapshot = default_snapshot();
         let proxies = json!({
             "proxies": {
@@ -1454,7 +1584,7 @@ mod tests {
             }
         });
 
-        let corrections = apply_proxies(&mut snapshot, &proxies);
+        let sync_result = apply_proxies(&mut snapshot, &proxies);
 
         let parent = snapshot
             .groups
@@ -1464,9 +1594,68 @@ mod tests {
         assert_eq!(parent.group_ids, vec![stable_id("group", "地区组")]);
         assert_eq!(
             parent.current_node_id.as_deref(),
-            Some(stable_id("node", "美国节点").as_str())
+            Some(stable_id("group", "地区组").as_str())
         );
-        assert!(corrections.contains(&("总选择".into(), "美国节点".into())));
+        assert!(sync_result.manual_corrections.is_empty());
+    }
+
+    #[test]
+    fn follows_runtime_selection_for_automatic_groups_instead_of_cached_selection() {
+        let mut snapshot = default_snapshot();
+        let initial = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "自动选择": {
+                    "type": "URLTest",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "香港节点"
+                },
+                "故障转移": {
+                    "type": "Fallback",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "香港节点"
+                }
+            }
+        });
+        apply_proxies(&mut snapshot, &initial);
+
+        let changed = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "自动选择": {
+                    "type": "URLTest",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "美国节点"
+                },
+                "故障转移": {
+                    "type": "Fallback",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "美国节点"
+                }
+            }
+        });
+        let sync_result = apply_proxies(&mut snapshot, &changed);
+        let us_node_id = stable_id("node", "美国节点");
+
+        for name in ["自动选择", "故障转移"] {
+            let group = snapshot
+                .groups
+                .iter()
+                .find(|group| group.name == name)
+                .expect("自动代理组应存在");
+            assert_eq!(group.current_node_id.as_deref(), Some(us_node_id.as_str()));
+            assert!(!group.allow_manual);
+        }
+        assert!(sync_result.manual_corrections.is_empty());
+        assert_eq!(sync_result.changed_automatic_groups.len(), 2);
+        assert!(sync_result
+            .changed_automatic_groups
+            .contains(&"自动选择".to_string()));
+        assert!(sync_result
+            .changed_automatic_groups
+            .contains(&"故障转移".to_string()));
     }
 
     #[test]
@@ -1489,7 +1678,7 @@ mod tests {
             .expect("应生成手动选择代理组")
             .current_node_id = Some(us_node_id.clone());
 
-        let corrections = apply_proxies(&mut snapshot, &initial);
+        let sync_result = apply_proxies(&mut snapshot, &initial);
 
         let group = snapshot
             .groups
@@ -1497,7 +1686,10 @@ mod tests {
             .find(|group| group.id == group_id)
             .expect("刷新后应保留代理组");
         assert_eq!(group.current_node_id.as_deref(), Some(us_node_id.as_str()));
-        assert_eq!(corrections, vec![("手动选择".into(), "美国节点".into())]);
+        assert_eq!(
+            sync_result.manual_corrections,
+            vec![("手动选择".into(), "美国节点".into())]
+        );
 
         let without_us = json!({
             "proxies": {

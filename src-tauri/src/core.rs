@@ -212,6 +212,7 @@ pub(crate) fn proxy_config_changed(previous: &AppSnapshot, current: &AppSnapshot
                 })
         })
         || previous.proxy_group_overrides != current.proxy_group_overrides
+        || previous.node_dialer_overrides != current.node_dialer_overrides
 }
 
 pub(crate) fn rule_config_changed(previous: &AppSnapshot, current: &AppSnapshot) -> bool {
@@ -275,9 +276,27 @@ pub(crate) async fn sync_runtime_config(
             }
             if let Err(error) = controller.reload_config(&content).await {
                 if service_available {
+                    let current_status = tun_service::status(app)?;
+                    if current_status.running {
+                        let rollback = rollback_service_config(
+                            app,
+                            snapshot,
+                            &path,
+                            previous_content.as_deref(),
+                        )
+                        .await;
+                        return Err(match rollback {
+                            Ok(()) => format!(
+                                "热加载应用运行配置失败：{error}；原 Mihomo 未重启，已恢复上次配置"
+                            ),
+                            Err(rollback_error) => format!(
+                                "热加载应用运行配置失败：{error}；原 Mihomo 未重启，但恢复上次配置失败：{rollback_error}"
+                            ),
+                        });
+                    }
                     tun_service::start_core(app, content.clone(), &snapshot.settings)?;
                     if !wait_controller_ready(&snapshot.settings).await {
-                        return Err("系统服务重启 Mihomo 后控制器未能就绪".into());
+                        return Err("Mihomo 已退出，系统服务恢复性拉起后控制器未能就绪".into());
                     }
                 } else {
                     return Err(format!("应用运行配置失败：{error}"));
@@ -379,31 +398,23 @@ async fn switch_service_tun_runtime(
         return verify_tun_runtime(&snapshot.settings, expected_tun).await;
     }
 
-    let hot_reload_result = async {
-        tun_service::sync_core_config(app, content.to_string(), &snapshot.settings)?;
-        let controller = mihomo::MihomoClient::from_settings(&snapshot.settings)
-            .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
-        controller.reload_config(content).await?;
-        verify_tun_runtime(&snapshot.settings, expected_tun).await?;
-        tun_service::reconcile_core_network(app)
-    }
-    .await;
-    let Err(hot_reload_error) = hot_reload_result else {
-        return Ok(());
-    };
-
-    tun_service::start_core(app, content.to_string(), &snapshot.settings).map_err(
-        |restart_error| {
-            format!("热加载现有 Mihomo 失败：{hot_reload_error}；回退重启也失败：{restart_error}")
-        },
-    )?;
-    verify_tun_runtime(&snapshot.settings, expected_tun)
+    reload_service_core_config(app, snapshot, content, expected_tun)
         .await
-        .map_err(|restart_error| {
-            format!(
-                "热加载现有 Mihomo 失败：{hot_reload_error}；回退重启后的状态校验失败：{restart_error}"
-            )
-        })
+        .map_err(|error| format!("热加载现有 Mihomo 失败：{error}"))
+}
+
+async fn reload_service_core_config(
+    app: &AppHandle,
+    snapshot: &AppSnapshot,
+    content: &str,
+    expected_tun: bool,
+) -> Result<(), String> {
+    tun_service::sync_core_config(app, content.to_string(), &snapshot.settings)?;
+    let controller = mihomo::MihomoClient::from_settings(&snapshot.settings)
+        .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
+    controller.reload_config(content).await?;
+    verify_tun_runtime(&snapshot.settings, expected_tun).await?;
+    tun_service::reconcile_core_network(app)
 }
 
 async fn verify_tun_runtime(settings: &SettingsMap, expected_tun: bool) -> Result<(), String> {
@@ -441,11 +452,25 @@ async fn rollback_service_config(
     let Some(previous) = previous_content else {
         return Ok(());
     };
-    tun_service::start_core(app, previous.to_string(), &snapshot.settings)?;
-    wait_controller_ready(&snapshot.settings)
-        .await
-        .then_some(())
-        .ok_or_else(|| "恢复系统服务 Mihomo 配置后控制器未能就绪".into())
+    let previous_tun = config_tun_enabled(previous)
+        .ok_or_else(|| "无法读取上次运行配置中的 TUN 状态".to_string())?;
+    match reload_service_core_config(app, snapshot, previous, previous_tun).await {
+        Ok(()) => Ok(()),
+        Err(hot_rollback_error) => {
+            let status = tun_service::status(app)?;
+            if status.running {
+                return Err(format!(
+                    "原 Mihomo 仍在运行，但热回滚失败：{hot_rollback_error}"
+                ));
+            }
+            tun_service::start_core(app, previous.to_string(), &snapshot.settings)?;
+            verify_tun_runtime(&snapshot.settings, previous_tun)
+                .await
+                .map_err(|restart_error| {
+                    format!("Mihomo 已退出，恢复性拉起后的状态校验失败：{restart_error}")
+                })
+        }
+    }
 }
 
 async fn rollback_runtime_config(
@@ -525,16 +550,35 @@ fn managed_core_pid_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 async fn stop_managed_core(app: &AppHandle, settings: &SettingsMap) -> Result<(), String> {
+    stop_managed_core_process(app, settings, true).await
+}
+
+pub(crate) async fn stop_managed_core_on_exit(
+    app: &AppHandle,
+    settings: &SettingsMap,
+) -> Result<(), String> {
+    stop_managed_core_process(app, settings, false).await
+}
+
+async fn stop_managed_core_process(
+    app: &AppHandle,
+    settings: &SettingsMap,
+    allow_controller_fallback: bool,
+) -> Result<(), String> {
     let pid_path = managed_core_pid_path(app)?;
     let stored_pid = fs::read_to_string(&pid_path)
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok());
     #[cfg(windows)]
-    let pid = stored_pid.or_else(|| controller_process_id(settings).ok());
+    let pid = stored_pid.or_else(|| {
+        allow_controller_fallback
+            .then(|| controller_process_id(settings).ok())
+            .flatten()
+    });
     #[cfg(not(windows))]
     let pid = stored_pid;
     let Some(pid) = pid else {
-        return if mihomo::controller_is_ready(settings).await {
+        return if allow_controller_fallback && mihomo::controller_is_ready(settings).await {
             Err("Mihomo 控制器仍在运行，但未找到由应用启动的进程记录".into())
         } else {
             Ok(())
@@ -952,6 +996,16 @@ mod tests {
                 added_group_ids: vec!["local".into()],
             });
         assert!(proxy_config_changed(&previous, &override_changed));
+
+        let mut dialer_override_changed = previous.clone();
+        dialer_override_changed.node_dialer_overrides.push(
+            crate::models::ProxyNodeDialerOverride {
+                target_node_id: "node-a".into(),
+                target_node_name: "节点 A".into(),
+                dialer_proxy: Some("香港前置".into()),
+            },
+        );
+        assert!(proxy_config_changed(&previous, &dialer_override_changed));
     }
 
     #[test]

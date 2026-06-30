@@ -43,6 +43,12 @@ export interface ProxyGroupMemberOverride {
   addedGroupIds: string[];
 }
 
+export interface ProxyNodeDialerOverride {
+  targetNodeId: string;
+  targetNodeName: string;
+  dialerProxy: string | null;
+}
+
 export type SubscriptionType = "HTTP" | "文件导入" | "本地链接";
 
 export interface Subscription {
@@ -219,6 +225,7 @@ export interface AppData {
   nodes: ProxyNode[];
   groups: ProxyGroup[];
   proxyGroupOverrides: ProxyGroupMemberOverride[];
+  nodeDialerOverrides: ProxyNodeDialerOverride[];
   subscriptions: Subscription[];
   rules: RoutingRule[];
   ruleOverrides: RoutingRuleOverride[];
@@ -264,6 +271,7 @@ export interface AppState extends AppData {
   selectGroup: (groupId: string) => void;
   addNode: (node: ProxyNode) => void;
   updateNode: (node: ProxyNode) => void;
+  setNodeDialerOverride: (targetNode: ProxyNode, dialerProxy?: string) => Promise<void>;
   updateNodeLatency: (nodeId: string, latency: number, available?: boolean) => void;
   testNodeLatency: (nodeId: string) => Promise<DelayResult>;
   testAutoProxyGroups: () => Promise<void>;

@@ -65,6 +65,14 @@ pub struct ProxyGroupMemberOverride {
     pub added_group_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyNodeDialerOverride {
+    pub target_node_id: String,
+    pub target_node_name: String,
+    pub dialer_proxy: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Subscription {
@@ -295,6 +303,8 @@ pub struct AppSnapshot {
     pub groups: Vec<ProxyGroup>,
     #[serde(default)]
     pub proxy_group_overrides: Vec<ProxyGroupMemberOverride>,
+    #[serde(default)]
+    pub node_dialer_overrides: Vec<ProxyNodeDialerOverride>,
     pub subscriptions: Vec<Subscription>,
     pub rules: Vec<RoutingRule>,
     #[serde(default)]

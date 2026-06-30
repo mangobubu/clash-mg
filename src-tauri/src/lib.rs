@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fmt::Write, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fmt::Write,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Mutex,
+    },
+};
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -26,9 +33,37 @@ use models::{
 pub use tun_service::try_run_cli as try_run_tun_service_cli;
 
 const CONNECTIONS_WINDOW_LABEL: &str = "connections-window";
+const EXIT_IDLE: u8 = 0;
+const EXIT_STOPPING_MIHOMO: u8 = 1;
+const EXIT_READY: u8 = 2;
+const EXIT_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
 struct ConnectionDetailSnapshots(Mutex<HashMap<String, models::Connection>>);
+
+#[derive(Default)]
+struct AppExitState(AtomicU8);
+
+impl AppExitState {
+    fn is_ready(&self) -> bool {
+        self.0.load(Ordering::Acquire) == EXIT_READY
+    }
+
+    fn begin_cleanup(&self) -> bool {
+        self.0
+            .compare_exchange(
+                EXIT_IDLE,
+                EXIT_STOPPING_MIHOMO,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn mark_ready(&self) {
+        self.0.store(EXIT_READY, Ordering::Release);
+    }
+}
 
 fn create_connection_window_label(id: &str) -> String {
     let sanitized: String = id
@@ -440,10 +475,35 @@ fn get_lan_ip() -> String {
     "127.0.0.1".into()
 }
 
+async fn stop_mihomo_before_exit(app: &tauri::AppHandle) -> Result<(), String> {
+    let settings = storage::load_snapshot(app)
+        .map(|snapshot| snapshot.settings)
+        .unwrap_or_else(|error| {
+            eprintln!("退出时读取应用设置失败，将仅按进程记录停止 Mihomo：{error}");
+            SettingsMap::new()
+        });
+    let managed_result = core::stop_managed_core_on_exit(app, &settings).await;
+
+    let service_app = app.clone();
+    let service_result =
+        tauri::async_runtime::spawn_blocking(move || tun_service::stop_core(&service_app))
+            .await
+            .map_err(|error| format!("停止系统服务托管的 Mihomo 任务失败：{error}"))?;
+
+    match (service_result, managed_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(service_error), Err(managed_error)) => Err(format!(
+            "停止系统服务托管的 Mihomo 失败：{service_error}；停止应用托管的 Mihomo 失败：{managed_error}"
+        )),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(ConnectionDetailSnapshots::default())
+        .manage(AppExitState::default())
         .setup(|app| {
             tray::setup(app.handle())?;
             let snapshot = storage::load_snapshot(app.handle()).unwrap_or_else(|error| {
@@ -518,6 +578,50 @@ pub fn run() {
             list_running_processes,
             get_lan_ip
         ])
-        .run(tauri::generate_context!())
-        .expect("运行 clash-mg 时发生错误");
+        .build(tauri::generate_context!())
+        .expect("构建 clash-mg 应用失败");
+
+    app.run(|app, event| {
+        let tauri::RunEvent::ExitRequested { code, api, .. } = event else {
+            return;
+        };
+        let exit_state = app.state::<AppExitState>();
+        if exit_state.is_ready() {
+            return;
+        }
+
+        api.prevent_exit();
+        if !exit_state.begin_cleanup() {
+            return;
+        }
+
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match tokio::time::timeout(EXIT_CLEANUP_TIMEOUT, stop_mihomo_before_exit(&app)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("应用退出时停止 Mihomo 失败：{error}"),
+                Err(_) => eprintln!("应用退出时停止 Mihomo 超时，将继续退出"),
+            }
+            app.state::<AppExitState>().mark_ready();
+            app.exit(code.unwrap_or(0));
+        });
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_cleanup_only_starts_once_and_allows_exit_after_completion() {
+        let state = AppExitState::default();
+
+        assert!(!state.is_ready());
+        assert!(state.begin_cleanup());
+        assert!(!state.begin_cleanup());
+
+        state.mark_ready();
+
+        assert!(state.is_ready());
+    }
 }

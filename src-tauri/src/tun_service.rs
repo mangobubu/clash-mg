@@ -25,20 +25,15 @@ const SERVICE_NAME: &str = "ClashMgTunService";
 #[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.clashmg.tun-service";
 const SERVICE_PORT: u16 = 47892;
-const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.9");
+const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.10");
 const CLIENT_CONFIG_NAME: &str = "tun-service.json";
 const RUNTIME_STATE_NAME: &str = "runtime-state.json";
 const MAX_REQUEST_BYTES: u64 = 48 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 const IPC_TIMEOUT: Duration = Duration::from_secs(60);
-const CORE_RUNTIME_FILE_NAMES: &[&str] = &[
-    "Country.mmdb",
-    "geoip.metadb",
-    "geosite.dat",
-    "geoip.dat",
-    "cache.db",
-];
+const CORE_RUNTIME_FILE_NAMES: &[&str] =
+    &["Country.mmdb", "geoip.metadb", "geosite.dat", "geoip.dat"];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -422,7 +417,7 @@ pub fn stop_core(app: &AppHandle) -> Result<(), String> {
         TunServiceRequest {
             token: config.token.clone(),
             action: "stop".into(),
-            version: SERVICE_VERSION.into(),
+            version: config.version.clone(),
             config: None,
             files: Vec::new(),
             core_dir: None,
@@ -785,6 +780,7 @@ fn handle_request(
                     log: log_options,
                     override_system_dns: request.override_system_dns.unwrap_or(false),
                 },
+                false,
             )?;
             Ok(TunServiceResponse {
                 ok: true,
@@ -822,7 +818,7 @@ fn start_managed_core(
         log,
         override_system_dns,
     };
-    sync_managed_core_files(daemon_config, content, files, core_dir, state)?;
+    sync_managed_core_files(daemon_config, content, files, core_dir, state, true)?;
     spawn_managed_core(daemon_config, runtime, content, state)
 }
 
@@ -832,6 +828,7 @@ fn sync_managed_core_files(
     files: &[TunServiceFile],
     core_dir: Option<&str>,
     state: PersistedRuntimeState,
+    copy_runtime_files: bool,
 ) -> Result<(), String> {
     validate_service_config(content)?;
     fs::create_dir_all(&daemon_config.data_dir).map_err(|error| error.to_string())?;
@@ -849,8 +846,10 @@ fn sync_managed_core_files(
         fs::write(target, &file.content).map_err(|error| error.to_string())?;
     }
 
-    if let Some(core_dir) = core_dir {
-        copy_core_runtime_files(Path::new(core_dir), &daemon_config.data_dir)?;
+    if copy_runtime_files {
+        if let Some(core_dir) = core_dir {
+            copy_core_runtime_files(Path::new(core_dir), &daemon_config.data_dir)?;
+        }
     }
 
     let config_path = daemon_config.data_dir.join("config.yaml");
@@ -1740,6 +1739,32 @@ mod tests {
         assert_eq!(
             fs::read(target.join("geoip.metadb")).expect("应读取复制后的 MetaDB"),
             b"meta database"
+        );
+        fs::remove_dir_all(root).expect("应清理测试目录");
+    }
+
+    #[test]
+    fn never_replaces_service_owned_cache_database() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应晚于 Unix 纪元")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "clash-mg-tun-cache-isolation-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).expect("应创建测试源目录");
+        fs::create_dir_all(&target).expect("应创建测试目标目录");
+        fs::write(source.join("cache.db"), b"user cache").expect("应写入用户缓存");
+        fs::write(target.join("cache.db"), b"service cache").expect("应写入服务缓存");
+
+        copy_core_runtime_files(&source, &target).expect("应同步只读运行资源");
+
+        assert_eq!(
+            fs::read(target.join("cache.db")).expect("应读取服务缓存"),
+            b"service cache"
         );
         fs::remove_dir_all(root).expect("应清理测试目录");
     }

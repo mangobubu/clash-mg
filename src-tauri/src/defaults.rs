@@ -169,6 +169,7 @@ pub fn default_snapshot() -> AppSnapshot {
         nodes: Vec::new(),
         groups: Vec::new(),
         proxy_group_overrides: Vec::new(),
+        node_dialer_overrides: Vec::new(),
         subscriptions: Vec::new(),
         rules: Vec::new(),
         rule_overrides: Vec::new(),

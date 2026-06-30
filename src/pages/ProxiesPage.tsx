@@ -28,7 +28,7 @@ import { IconPicker, defaultProxyGroupIcon } from "../components/IconPicker";
 import { Latency, PageHeader, Panel } from "../components/Common";
 import { useAppStore } from "../store/useAppStore";
 import type { ProxyGroup, ProxyGroupOrigin, ProxyGroupType, ProxyNode } from "../types";
-import { compareProxyNodesByLatency, findLowestLatencyProxyNode } from "../utils/nodeLatency";
+import { compareProxyNodesByLatency } from "../utils/nodeLatency";
 import { continentOptions, getNodeContinent, type ContinentFilter } from "../utils/nodeLocation";
 import {
   getSelectableProxyGroupMembers,
@@ -167,9 +167,10 @@ export function ProxiesPage() {
     updateGroup,
     setProxyGroupOverride,
     testNodeLatency,
+    refreshRuntimeData,
   } = useAppStore();
   const activeNodeGroup = groups.find((group) => group.id === nodePickerGroupId);
-  const isAutoTestGroup = activeNodeGroup?.type === "URL-Test";
+  const isRuntimeManagedGroup = activeNodeGroup ? !activeNodeGroup.allowManual : false;
   const isEditingManagedGroup = editingGroup ? getProxyGroupOrigin(editingGroup) === "managed" : false;
   const groupSelectableNodes = nodes.slice(0, 8);
   const visibleGroups = groups.filter((group) => !isHiddenBuiltinProxyGroup(group));
@@ -246,6 +247,11 @@ export function ProxiesPage() {
   };
 
   useEffect(() => clearTestTimers, []);
+  useEffect(() => {
+    void refreshRuntimeData();
+    const timer = window.setInterval(() => void refreshRuntimeData(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [refreshRuntimeData]);
 
   const closeNodePicker = () => {
     clearTestTimers();
@@ -279,16 +285,10 @@ export function ProxiesPage() {
 
           if (testedResults.length === testableNodes.length) {
             testTimerRefs.current = [];
-            const reachableResults = testedResults.filter((item) => Number.isFinite(item.latency));
-            if (activeNodeGroup?.type === "URL-Test" && reachableResults.length) {
-              const bestNode = findLowestLatencyProxyNode(reachableResults.map((item) => ({
-                ...item.node,
-                latency: item.latency,
-                available: true,
-              })));
-              if (!bestNode) return;
-              void selectProxy(bestNode.id, activeNodeGroup.id);
-              message.success(`已自动选择最低延迟节点 ${bestNode.name}`);
+            if (activeNodeGroup?.type === "URL-Test") {
+              void refreshRuntimeData().then(() => {
+                message.success("测速完成，已同步 Mihomo 的自动选择结果");
+              });
             } else {
               message.success("测速完成");
             }
@@ -300,14 +300,14 @@ export function ProxiesPage() {
   };
 
   const selectPickerNode = (node: ProxyNode) => {
-    if (!activeNodeGroup || activeNodeGroup.type === "URL-Test" || !node.available || testingNodeIds.includes(node.id)) return;
+    if (!activeNodeGroup || !activeNodeGroup.allowManual || !node.available || testingNodeIds.includes(node.id)) return;
     void selectProxy(node.id, activeNodeGroup.id);
     message.success(`已切换至 ${node.name}`);
     closeNodePicker();
   };
 
   const selectPickerGroup = (group: ProxyGroup) => {
-    if (!activeNodeGroup || isAutoTestGroup) return;
+    if (!activeNodeGroup || !activeNodeGroup.allowManual) return;
     void selectProxy(group.id, activeNodeGroup.id);
     message.success(`已切换至代理组 ${group.name}`);
     closeNodePicker();
@@ -388,7 +388,7 @@ export function ProxiesPage() {
       groupIds: values.groupIds,
       currentNodeId,
       autoTest: values.autoTest,
-      allowManual: values.type !== "URL-Test",
+      allowManual: values.type === "Selector",
     };
 
     if (editingGroup) {
@@ -495,13 +495,13 @@ export function ProxiesPage() {
                   <button
                     key={group.id}
                     type="button"
-                    className={`${isSelected ? "selected" : ""}${isAutoTestGroup ? " auto-managed" : ""}`}
-                    aria-disabled={isAutoTestGroup}
-                    disabled={isAutoTestGroup}
+                    className={`${isSelected ? "selected" : ""}${isRuntimeManagedGroup ? " auto-managed" : ""}`}
+                    aria-disabled={isRuntimeManagedGroup}
+                    disabled={isRuntimeManagedGroup}
                     onClick={() => selectPickerGroup(group)}
                   >
                     <span className="proxy-node-picker-card-head">
-                      <Radio checked={isSelected} disabled={isAutoTestGroup} />
+                      <Radio checked={isSelected} disabled={isRuntimeManagedGroup} />
                       <Tag color={isBuiltinPolicy ? "default" : "purple"}>{isBuiltinPolicy ? "内置策略" : "代理组"}</Tag>
                     </span>
                     <span className="proxy-node-picker-name"><strong>{group.name}</strong><small>{group.type}</small></span>
@@ -522,13 +522,13 @@ export function ProxiesPage() {
                   <button
                     key={node.id}
                     type="button"
-                    className={`${isSelected ? "selected" : ""}${isAutoTestGroup ? " auto-managed" : ""}`}
-                    aria-disabled={isAutoTestGroup || !node.available || isTesting}
+                    className={`${isSelected ? "selected" : ""}${isRuntimeManagedGroup ? " auto-managed" : ""}`}
+                    aria-disabled={isRuntimeManagedGroup || !node.available || isTesting}
                     disabled={!node.available || isTesting}
                     onClick={() => selectPickerNode(node)}
                   >
                     <span className="proxy-node-picker-card-head">
-                      <Radio checked={isSelected} disabled={isAutoTestGroup} />
+                      <Radio checked={isSelected} disabled={isRuntimeManagedGroup} />
                       {node.flag && <span className="flag">{node.flag}</span>}
                     </span>
                     <span className="proxy-node-picker-name"><strong>{node.name}</strong><small>{[getNodeContinent(node), node.country, node.protocol].filter(Boolean).join(" · ")}</small></span>

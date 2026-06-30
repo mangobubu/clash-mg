@@ -116,6 +116,7 @@ export function createEmptyAppData(): AppData {
     nodes: [],
     groups: [],
     proxyGroupOverrides: [],
+    nodeDialerOverrides: [],
     subscriptions: [],
     rules: [],
     ruleOverrides: [],

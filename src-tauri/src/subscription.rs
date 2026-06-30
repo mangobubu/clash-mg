@@ -500,6 +500,7 @@ pub(crate) fn build_effective_config(
 
     apply_local_proxy_groups(&mut groups, snapshot)?;
     apply_proxy_group_overrides(&mut groups, snapshot)?;
+    apply_node_dialer_overrides(&mut proxies, snapshot);
     apply_local_rules(&mut rules, snapshot);
     apply_rule_overrides(&mut rules, snapshot)?;
     apply_default_route(&mut rules, &groups, snapshot);
@@ -659,6 +660,35 @@ fn apply_proxy_group_overrides(groups: &mut [Value], snapshot: &AppSnapshot) -> 
     }
 
     Ok(())
+}
+
+fn apply_node_dialer_overrides(proxies: &mut [Value], snapshot: &AppSnapshot) {
+    for node_override in &snapshot.node_dialer_overrides {
+        let Some(proxy) = proxies
+            .iter_mut()
+            .find(|proxy| item_name(proxy) == Some(node_override.target_node_name.as_str()))
+        else {
+            continue;
+        };
+        let Some(mapping) = proxy.as_mapping_mut() else {
+            continue;
+        };
+
+        mapping.remove(key("dialerProxy"));
+        match node_override
+            .dialer_proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(dialer_proxy) => {
+                mapping.insert(key("dialer-proxy"), Value::String(dialer_proxy.to_string()));
+            }
+            None => {
+                mapping.remove(key("dialer-proxy"));
+            }
+        }
+    }
 }
 
 fn apply_local_rules(rules: &mut Vec<Value>, snapshot: &AppSnapshot) {
@@ -1834,6 +1864,48 @@ mod tests {
             ),
         );
         Value::Mapping(group)
+    }
+
+    fn proxy_with_dialer(name: &str, dialer_proxy: Option<&str>) -> Value {
+        let mut proxy = Mapping::new();
+        proxy.insert(key("name"), Value::String(name.into()));
+        proxy.insert(key("type"), Value::String("ss".into()));
+        if let Some(dialer_proxy) = dialer_proxy {
+            proxy.insert(key("dialer-proxy"), Value::String(dialer_proxy.into()));
+        }
+        Value::Mapping(proxy)
+    }
+
+    #[test]
+    fn reapplies_and_clears_node_dialer_override_after_subscription_changes() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot
+            .node_dialer_overrides
+            .push(crate::models::ProxyNodeDialerOverride {
+                target_node_id: "att-node".into(),
+                target_node_name: "AT&T尔湾".into(),
+                dialer_proxy: Some("香港前置".into()),
+            });
+
+        for subscription_default in [Some("默认前置"), None] {
+            let mut proxies = vec![proxy_with_dialer("AT&T尔湾", subscription_default)];
+            apply_node_dialer_overrides(&mut proxies, &snapshot);
+            assert_eq!(
+                proxies[0]
+                    .as_mapping()
+                    .and_then(|proxy| proxy.get(key("dialer-proxy")))
+                    .and_then(Value::as_str),
+                Some("香港前置")
+            );
+        }
+
+        snapshot.node_dialer_overrides[0].dialer_proxy = None;
+        let mut proxies = vec![proxy_with_dialer("AT&T尔湾", Some("默认前置"))];
+        apply_node_dialer_overrides(&mut proxies, &snapshot);
+        assert!(!proxies[0]
+            .as_mapping()
+            .expect("节点应为 YAML 对象")
+            .contains_key(key("dialer-proxy")));
     }
 
     #[test]

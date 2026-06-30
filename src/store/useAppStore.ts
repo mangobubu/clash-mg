@@ -13,7 +13,6 @@ import {
 } from "../backend/api";
 import { createEmptyAppData, defaultSettings } from "../defaults/appDefaults";
 import type { AppData, AppState, DelayResult, OverrideItem, Subscription, SubscriptionRefreshResult } from "../types";
-import { findLowestLatencyProxyNode } from "../utils/nodeLatency";
 
 const currentTime = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 
@@ -53,6 +52,7 @@ const toAppData = (state: AppState): AppData => ({
   nodes: state.nodes,
   groups: state.groups,
   proxyGroupOverrides: state.proxyGroupOverrides,
+  nodeDialerOverrides: state.nodeDialerOverrides,
   subscriptions: state.subscriptions,
   rules: state.rules,
   ruleOverrides: state.ruleOverrides,
@@ -93,10 +93,19 @@ const queuePersist = () => {
 };
 
 const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
+  const nodeDialerOverrides = snapshot.nodeDialerOverrides ?? [];
   useAppStore.setState({
     ...snapshot,
+    nodes: snapshot.nodes.map((node) => {
+      const override = nodeDialerOverrides.find((item) =>
+        item.targetNodeId === node.id || item.targetNodeName === node.name);
+      return override
+        ? { ...node, dialerProxy: override.dialerProxy ?? undefined }
+        : node;
+    }),
     groups: snapshot.groups.map((group) => ({ ...group, groupIds: group.groupIds ?? [] })),
     proxyGroupOverrides: snapshot.proxyGroupOverrides ?? [],
+    nodeDialerOverrides,
     connections: snapshot.connections
       .filter((connection) => !closingConnectionIds.has(connection.id))
       .map((connection) => ({
@@ -237,12 +246,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
   selectProxy: async (proxyId, groupId) => {
+    const initial = get();
+    const targetGroupId = groupId ?? initial.selectedGroupId;
+    const targetGroup = initial.groups.find((group) => group.id === targetGroupId);
+    if (targetGroup && !targetGroup.allowManual) {
+      appendLog("WARNING", "代理", `代理组“${targetGroup.name}”由 Mihomo 自动管理，已忽略手动切换`);
+      await get().refreshRuntimeData();
+      return;
+    }
+
     set((state) => {
       const node = state.nodes.find((item) => item.id === proxyId);
       const nestedGroup = state.groups.find((item) => item.id === proxyId);
       const selectedProxy = node ?? nestedGroup;
       if (!selectedProxy) return state;
-      const targetGroupId = groupId ?? state.selectedGroupId;
       const targetLabel = node ? "节点" : "代理组";
       return {
         selectedNodeId: node ? node.id : state.selectedNodeId,
@@ -259,7 +276,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
         ],
       };
     });
-    queuePersist();
 
     const current = get();
     const group = current.groups.find((item) => item.id === (groupId ?? current.selectedGroupId));
@@ -268,9 +284,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (group && selectedProxy) {
       try {
         const snapshot = await selectRuntimeProxy(toAppData(current), group.name, selectedProxy.name);
-        applySnapshot(snapshot, true);
+        applySnapshot(snapshot, current.backendAvailable);
+        if (!current.backendAvailable) await saveAppSnapshot(snapshot);
       } catch (error) {
         appendLog("ERROR", "代理", `Mihomo 代理切换失败：${String(error)}`);
+        await get().refreshRuntimeData();
       }
     }
   },
@@ -286,13 +304,30 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({ nodes: state.nodes.map((item) => (item.id === node.id ? node : item)) }));
     queuePersist();
   },
+  setNodeDialerOverride: async (targetNode, dialerProxy) => {
+    window.clearTimeout(persistTimer);
+    persistTimer = undefined;
+    set((state) => ({
+      nodeDialerOverrides: [
+        ...state.nodeDialerOverrides.filter((item) =>
+          item.targetNodeId !== targetNode.id && item.targetNodeName !== targetNode.name),
+        {
+          targetNodeId: targetNode.id,
+          targetNodeName: targetNode.name,
+          dialerProxy: dialerProxy ?? null,
+        },
+      ],
+      nodes: state.nodes.map((node) =>
+        node.id === targetNode.id ? { ...node, dialerProxy } : node),
+    }));
+    await persistCurrentState();
+  },
   updateNodeLatency: (nodeId, latency, available) => {
     set((state) => ({
       nodes: state.nodes.map((node) =>
         node.id === nodeId ? { ...node, latency, available: available ?? node.available } : node,
       ),
     }));
-    queuePersist();
   },
   testNodeLatency: async (nodeId): Promise<DelayResult> => {
     const node = get().nodes.find((item) => item.id === nodeId);
@@ -313,14 +348,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (!automaticGroups.length || !nodeIds.length) return;
 
     await Promise.all(nodeIds.map((nodeId) => get().testNodeLatency(nodeId)));
-
-    for (const group of automaticGroups) {
-      const currentNodes = get().nodes.filter((node) => group.nodeIds.includes(node.id));
-      const bestNode = findLowestLatencyProxyNode(currentNodes);
-      if (!bestNode) continue;
-
-      await get().selectProxy(bestNode.id, group.id);
-    }
+    await get().refreshRuntimeData();
   },
   addGroup: (group) => {
     set((state) => ({ groups: [...state.groups, group] }));

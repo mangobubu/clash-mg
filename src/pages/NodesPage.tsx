@@ -65,7 +65,7 @@ const nodeLinkPattern = /^(ss|vmess|trojan|hysteria2):\/\//i;
 const canProxyGroupContainNodes = (group: ProxyGroup) => group.type !== "Direct" && group.type !== "Block";
 const getNodeOrigin = (node: ProxyNode) => node.origin ?? "managed";
 export function NodesPage() {
-  const { nodes, groups, addNode, updateNode, updateGroup, testNodeLatency } = useAppStore();
+  const { nodes, groups, addNode, updateNode, setNodeDialerOverride, updateGroup, testNodeLatency } = useAppStore();
   const [search, setSearch] = useState("");
   const [protocolFilter, setProtocolFilter] = useState<NodeProtocol | "all">("all");
   const [continentFilter, setContinentFilter] = useState<ContinentFilter>("all");
@@ -234,9 +234,13 @@ export function NodesPage() {
   const saveNode = async () => {
     if (editingNode && isEditingManagedNode) {
       const dialerProxy = (form.getFieldValue("dialerProxy") as string | undefined)?.trim() || undefined;
-      updateNode({ ...editingNode, dialerProxy });
-      closeNodeModal();
-      message.success("托管节点前置代理已更新");
+      try {
+        await setNodeDialerOverride(editingNode, dialerProxy);
+        closeNodeModal();
+        message.success("托管节点前置代理已保存并应用");
+      } catch (error) {
+        message.error(`前置代理应用失败：${String(error)}`);
+      }
       return;
     }
 

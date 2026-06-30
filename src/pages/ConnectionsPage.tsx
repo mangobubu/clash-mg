@@ -7,14 +7,12 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Checkbox, Flex, Input, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
 import type { TableColumnsType } from "antd";
 import { PageHeader, Panel, StatusDot } from "../components/Common";
 import { ProcessIcon } from "../components/ProcessIcon";
 import { useAppStore } from "../store/useAppStore";
 import type { Connection } from "../types";
-import { isTauriRuntime } from "../utils/tauri";
 import {
   applyConnectionRates,
   calculateConnectionRates,
@@ -48,7 +46,6 @@ export function ConnectionsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [connectionRates, setConnectionRates] = useState<Record<string, ConnectionRate>>({});
-  const [windowActive, setWindowActive] = useState(true);
   const trafficSampleRef = useRef<ConnectionTrafficSample | undefined>(undefined);
   const refreshingRef = useRef(false);
   const { connections, closeConnections, clearClosedConnections, refreshConnections, refreshRuntimeData } = useAppStore();
@@ -64,43 +61,14 @@ export function ConnectionsPage() {
   }, [refreshConnections]);
 
   useEffect(() => {
-    let mounted = true;
-    let unlisten: (() => void) | undefined;
-
-    const watchWindowFocus = async () => {
-      if (!await isTauriRuntime()) return;
-
-      const currentWindow = getCurrentWindow();
-      const focused = await currentWindow.isFocused();
-      if (mounted) setWindowActive(focused);
-
-      const stopListening = await currentWindow.onFocusChanged(({ payload }) => {
-        if (mounted) setWindowActive(payload);
-      });
-      if (mounted) {
-        unlisten = stopListening;
-      } else {
-        stopListening();
-      }
-    };
-
-    void watchWindowFocus();
-    return () => {
-      mounted = false;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!windowActive) return;
     void refreshConnectionData();
-  }, [refreshConnectionData, windowActive]);
+  }, [refreshConnectionData]);
 
   useEffect(() => {
-    if (!windowActive || !autoRefresh) return;
+    if (!autoRefresh) return;
     const timer = window.setInterval(() => void refreshConnectionData(), refreshInterval);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, refreshConnectionData, refreshInterval, windowActive]);
+  }, [autoRefresh, refreshConnectionData, refreshInterval]);
 
   useEffect(() => {
     const { rates, sample } = calculateConnectionRates(connections, Date.now(), trafficSampleRef.current);

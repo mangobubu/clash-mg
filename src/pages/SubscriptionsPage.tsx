@@ -39,11 +39,14 @@ const { TextArea } = Input;
 
 function parseRequestHeaders(value?: string): Record<string, string> {
   if (!value?.trim()) return {};
-  return Object.fromEntries(value.split(/\r?\n/).map((line) => {
-    const separator = line.indexOf(":");
-    if (separator <= 0) throw new Error(`请求头格式无效：${line}`);
-    return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
-  }).filter(([name]) => Boolean(name)));
+  return Object.fromEntries(value.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const separator = line.indexOf(":");
+      if (separator <= 0) throw new Error(`请求头格式无效：${line}`);
+      return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+    }).filter(([name]) => Boolean(name)));
 }
 
 function formatRequestHeaders(headers: Record<string, string>) {

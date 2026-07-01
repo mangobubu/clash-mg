@@ -628,8 +628,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     window.clearTimeout(persistTimer);
     persistTimer = undefined;
     await persistenceChain.catch(() => undefined);
-    const nextSettings = { ...current.settings, tunMode: enabled };
-    const nextSnapshot = toAppData({ ...current, settings: nextSettings });
+    
+    const latest = get();
+    const nextSettings = { ...latest.settings, tunMode: enabled };
+    const nextSnapshot = toAppData({ ...latest, settings: nextSettings });
 
     try {
       await saveAppSnapshot(nextSnapshot);

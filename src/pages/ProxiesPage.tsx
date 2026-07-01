@@ -397,11 +397,11 @@ export function ProxiesPage() {
       autoTest: values.autoTest,
       allowManual: values.type === "Selector" || values.type === "Fallback",
       testUrl: values.testUrl.trim(),
-      interval: values.interval,
-      tolerance: values.tolerance,
+      interval: values.interval ?? 300,
+      tolerance: values.tolerance ?? 50,
       loadBalanceStrategy: values.loadBalance,
       healthCheck: values.healthCheck,
-      failureThreshold: values.failureThreshold,
+      failureThreshold: values.failureThreshold ?? 3,
       extra: values.extra?.trim() ?? "",
     };
 

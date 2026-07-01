@@ -405,12 +405,14 @@ async fn refresh_runtime_connections(
 async fn select_proxy_node(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppMutationState>,
-    snapshot: AppSnapshot,
+    _snapshot: AppSnapshot,
     group_name: String,
     node_name: String,
 ) -> Result<AppSnapshot, String> {
     let _guard = state.0.lock().await;
-    let refreshed = mihomo::select_proxy_node(snapshot, group_name, node_name).await?;
+    // 获锁后从磁盘加载最新快照，避免覆盖后台自动更新写入的订阅运行时数据
+    let latest = storage::load_snapshot(&app)?;
+    let refreshed = mihomo::select_proxy_node(latest, group_name, node_name).await?;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
@@ -434,11 +436,13 @@ async fn close_runtime_connections(
 async fn refresh_proxy_providers(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppMutationState>,
-    snapshot: AppSnapshot,
+    _snapshot: AppSnapshot,
     provider_names: Vec<String>,
 ) -> Result<AppSnapshot, String> {
     let _guard = state.0.lock().await;
-    let refreshed = mihomo::refresh_proxy_providers(snapshot, provider_names).await?;
+    // 获锁后从磁盘加载最新快照，避免覆盖后台自动更新写入的订阅运行时数据
+    let latest = storage::load_snapshot(&app)?;
+    let refreshed = mihomo::refresh_proxy_providers(latest, provider_names).await?;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
     Ok(refreshed)
@@ -608,7 +612,11 @@ async fn stop_mihomo_before_exit(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-async fn refresh_due_subscriptions(app: &tauri::AppHandle) -> Result<usize, String> {
+async fn refresh_due_subscriptions(
+    app: &tauri::AppHandle,
+    state: &AppMutationState,
+) -> Result<usize, String> {
+    // 阶段一（无锁）：读快照、筛选到期订阅、执行网络下载（每条超时最多 20 秒）
     let snapshot = storage::load_snapshot(app)?;
     let now = chrono::Local::now().timestamp();
     let due_ids = snapshot
@@ -622,7 +630,16 @@ async fn refresh_due_subscriptions(app: &tauri::AppHandle) -> Result<usize, Stri
     }
     let refreshed = subscription::refresh_local_subscriptions(app, snapshot, due_ids).await;
     let updated = refreshed.updated;
-    storage::save_snapshot(app, &refreshed.snapshot)?;
+    if updated == 0 {
+        return Ok(0);
+    }
+    // 阶段二（持锁）：重新加载磁盘最新快照，合并下载结果后保存
+    // 使用 merge_newer_subscription_runtime 处理下载期间其他写操作造成的版本冲突
+    let _guard = state.0.lock().await;
+    let latest = storage::load_snapshot(app)?;
+    let mut merged = refreshed.snapshot;
+    merge_newer_subscription_runtime(&latest, &mut merged);
+    storage::save_snapshot(app, &merged)?;
     Ok(updated)
 }
 
@@ -681,8 +698,8 @@ pub fn run() {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     let state = subscription_app.state::<AppMutationState>();
-                    let _guard = state.0.lock().await;
-                    if let Err(error) = refresh_due_subscriptions(&subscription_app).await {
+                    // 锁已移入 refresh_due_subscriptions 内部，仅在提交阶段持锁
+                    if let Err(error) = refresh_due_subscriptions(&subscription_app, &state).await {
                         eprintln!("自动更新订阅失败：{error}");
                     }
                 }

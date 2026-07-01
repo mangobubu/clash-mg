@@ -757,7 +757,7 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> ProxySyncResult {
                 .cloned()
         });
         let group_type = map_group_type(&proxy_string(proxy, "type").unwrap_or_default(), name);
-        let allow_manual = group_type == "Selector";
+        let allow_manual = matches!(group_type.as_str(), "Selector" | "Fallback");
         let should_restore_manual_selection = allow_manual
             && previous_current_id.is_some()
             && previous_current_id != runtime_current_id;
@@ -1600,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn follows_runtime_selection_for_automatic_groups_instead_of_cached_selection() {
+    fn preserves_fallback_manual_selection_while_following_automatic_group_selection() {
         let mut snapshot = default_snapshot();
         let initial = json!({
             "proxies": {
@@ -1637,23 +1637,40 @@ mod tests {
             }
         });
         let sync_result = apply_proxies(&mut snapshot, &changed);
+        let hk_node_id = stable_id("node", "香港节点");
         let us_node_id = stable_id("node", "美国节点");
 
-        for name in ["自动选择", "故障转移"] {
-            let group = snapshot
-                .groups
-                .iter()
-                .find(|group| group.name == name)
-                .expect("自动代理组应存在");
-            assert_eq!(group.current_node_id.as_deref(), Some(us_node_id.as_str()));
-            assert!(!group.allow_manual);
-        }
-        assert!(sync_result.manual_corrections.is_empty());
-        assert_eq!(sync_result.changed_automatic_groups.len(), 2);
+        let automatic_group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.name == "自动选择")
+            .expect("自动选择代理组应存在");
+        assert_eq!(
+            automatic_group.current_node_id.as_deref(),
+            Some(us_node_id.as_str())
+        );
+        assert!(!automatic_group.allow_manual);
+
+        let fallback_group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.name == "故障转移")
+            .expect("故障转移代理组应存在");
+        assert_eq!(
+            fallback_group.current_node_id.as_deref(),
+            Some(hk_node_id.as_str())
+        );
+        assert!(fallback_group.allow_manual);
+
+        assert_eq!(
+            sync_result.manual_corrections,
+            vec![("故障转移".into(), "香港节点".into())]
+        );
+        assert_eq!(sync_result.changed_automatic_groups.len(), 1);
         assert!(sync_result
             .changed_automatic_groups
             .contains(&"自动选择".to_string()));
-        assert!(sync_result
+        assert!(!sync_result
             .changed_automatic_groups
             .contains(&"故障转移".to_string()));
     }

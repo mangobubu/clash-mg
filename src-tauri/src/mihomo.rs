@@ -455,6 +455,7 @@ pub async fn select_proxy_node(
     group_name: String,
     node_name: String,
 ) -> Result<AppSnapshot, String> {
+    apply_requested_proxy_selection(&mut snapshot, &group_name, &node_name);
     let client = MihomoClient::from_settings(&snapshot.settings)
         .ok_or_else(|| "未配置 Mihomo 外部控制器地址".to_string())?;
     let path = format!("/proxies/{}", encode_component(&group_name));
@@ -491,6 +492,36 @@ pub async fn select_proxy_node(
         &format!("已通过 Mihomo 控制器切换“{group_name}”至“{node_name}”并断开相关旧连接"),
     );
     Ok(refresh_runtime_data(snapshot).await)
+}
+
+fn apply_requested_proxy_selection(snapshot: &mut AppSnapshot, group_name: &str, proxy_name: &str) {
+    let selected_proxy = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.name == proxy_name)
+        .map(|node| (node.id.clone(), true))
+        .or_else(|| {
+            snapshot
+                .groups
+                .iter()
+                .find(|group| group.name == proxy_name)
+                .map(|group| (group.id.clone(), false))
+        });
+
+    let Some(group) = snapshot
+        .groups
+        .iter_mut()
+        .find(|group| group.name == group_name)
+    else {
+        return;
+    };
+
+    group.current_node_id = selected_proxy
+        .as_ref()
+        .map(|(proxy_id, _)| proxy_id.clone());
+    if let Some((proxy_id, true)) = selected_proxy {
+        snapshot.selected_node_id = proxy_id;
+    }
 }
 
 pub async fn close_connections(
@@ -1687,6 +1718,48 @@ mod tests {
         assert!(!sync_result
             .changed_automatic_groups
             .contains(&"故障转移".to_string()));
+    }
+
+    #[test]
+    fn keeps_requested_manual_selection_during_immediate_runtime_refresh() {
+        let mut snapshot = default_snapshot();
+        let initial = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "手动选择": {
+                    "type": "Selector",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "香港节点"
+                }
+            }
+        });
+        apply_proxies(&mut snapshot, &initial);
+
+        apply_requested_proxy_selection(&mut snapshot, "手动选择", "美国节点");
+
+        let switched = json!({
+            "proxies": {
+                "香港节点": { "type": "ss", "server": "hk.example.com", "port": 443 },
+                "美国节点": { "type": "ss", "server": "us.example.com", "port": 443 },
+                "手动选择": {
+                    "type": "Selector",
+                    "all": ["香港节点", "美国节点"],
+                    "now": "美国节点"
+                }
+            }
+        });
+        let sync_result = apply_proxies(&mut snapshot, &switched);
+        let us_node_id = stable_id("node", "美国节点");
+        let group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.name == "手动选择")
+            .expect("手动选择代理组应存在");
+
+        assert_eq!(group.current_node_id.as_deref(), Some(us_node_id.as_str()));
+        assert_eq!(snapshot.selected_node_id, us_node_id);
+        assert!(sync_result.manual_corrections.is_empty());
     }
 
     #[test]

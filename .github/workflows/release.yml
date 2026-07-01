@@ -31,6 +31,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: 添加 macOS x86_64 编译目标
+        if: matrix.os == 'macos-14'
+        run: rustup target add x86_64-apple-darwin
+
       - name: 安装前端依赖
         run: npm ci
 
@@ -47,3 +51,4 @@ jobs:
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.os == 'macos-14' && '--target universal-apple-darwin' || '' }}

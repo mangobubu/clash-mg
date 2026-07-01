@@ -184,6 +184,16 @@ pub(crate) fn runtime_config_changed(previous: &SettingsMap, current: &SettingsM
 }
 
 pub(crate) fn proxy_config_changed(previous: &AppSnapshot, current: &AppSnapshot) -> bool {
+    let previous_local_nodes = previous
+        .nodes
+        .iter()
+        .filter(|node| node.origin == "local")
+        .collect::<Vec<_>>();
+    let current_local_nodes = current
+        .nodes
+        .iter()
+        .filter(|node| node.origin == "local")
+        .collect::<Vec<_>>();
     let previous_local_groups = previous
         .groups
         .iter()
@@ -195,7 +205,22 @@ pub(crate) fn proxy_config_changed(previous: &AppSnapshot, current: &AppSnapshot
         .filter(|group| group.origin == "local")
         .collect::<Vec<_>>();
 
-    previous_local_groups.len() != current_local_groups.len()
+    previous_local_nodes.len() != current_local_nodes.len()
+        || previous_local_nodes.iter().any(|previous_node| {
+            current_local_nodes
+                .iter()
+                .find(|current_node| current_node.id == previous_node.id)
+                .is_none_or(|current_node| {
+                    previous_node.name != current_node.name
+                        || previous_node.protocol != current_node.protocol
+                        || previous_node.address != current_node.address
+                        || previous_node.port != current_node.port
+                        || previous_node.password != current_node.password
+                        || previous_node.cipher != current_node.cipher
+                        || previous_node.dialer_proxy != current_node.dialer_proxy
+                })
+        })
+        || previous_local_groups.len() != current_local_groups.len()
         || previous_local_groups.iter().any(|previous_group| {
             current_local_groups
                 .iter()
@@ -209,10 +234,55 @@ pub(crate) fn proxy_config_changed(previous: &AppSnapshot, current: &AppSnapshot
                         || previous_group.group_ids != current_group.group_ids
                         || previous_group.auto_test != current_group.auto_test
                         || previous_group.allow_manual != current_group.allow_manual
+                        || previous_group.test_url != current_group.test_url
+                        || previous_group.interval != current_group.interval
+                        || previous_group.tolerance != current_group.tolerance
+                        || previous_group.load_balance_strategy
+                            != current_group.load_balance_strategy
+                        || previous_group.health_check != current_group.health_check
+                        || previous_group.failure_threshold != current_group.failure_threshold
+                        || previous_group.extra != current_group.extra
                 })
         })
         || previous.proxy_group_overrides != current.proxy_group_overrides
         || previous.node_dialer_overrides != current.node_dialer_overrides
+}
+
+pub(crate) fn override_config_changed(previous: &AppSnapshot, current: &AppSnapshot) -> bool {
+    previous.domain_overrides != current.domain_overrides
+}
+
+pub(crate) fn subscription_config_changed(previous: &AppSnapshot, current: &AppSnapshot) -> bool {
+    previous
+        .subscriptions
+        .iter()
+        .map(|item| {
+            (
+                &item.id,
+                item.enabled,
+                item.proxy_update,
+                item.allow_override,
+                item.health_check,
+                &item.test_url,
+                item.update_interval,
+            )
+        })
+        .collect::<Vec<_>>()
+        != current
+            .subscriptions
+            .iter()
+            .map(|item| {
+                (
+                    &item.id,
+                    item.enabled,
+                    item.proxy_update,
+                    item.allow_override,
+                    item.health_check,
+                    &item.test_url,
+                    item.update_interval,
+                )
+            })
+            .collect::<Vec<_>>()
 }
 
 pub(crate) fn rule_config_changed(previous: &AppSnapshot, current: &AppSnapshot) -> bool {
@@ -977,6 +1047,13 @@ mod tests {
             current_node_id: Some("node-a".into()),
             auto_test: false,
             allow_manual: true,
+            test_url: "https://www.gstatic.com/generate_204".into(),
+            interval: 300,
+            tolerance: 50,
+            load_balance_strategy: "round-robin".into(),
+            health_check: true,
+            failure_threshold: 3,
+            extra: String::new(),
         });
 
         let mut selection_only = previous.clone();

@@ -72,7 +72,7 @@ export async function selectRuntimeProxy(snapshot: AppData, groupName: string, n
 
 export async function closeRuntimeConnections(snapshot: AppData, ids: string[]) {
   if (!(await isTauriRuntime())) return snapshot;
-  return invoke<AppData>("close_runtime_connections", { snapshot, ids });
+  return invoke<AppData>("close_runtime_connections", { ids });
 }
 
 export async function refreshRuntimeProviders(snapshot: AppData, providerNames: string[]) {

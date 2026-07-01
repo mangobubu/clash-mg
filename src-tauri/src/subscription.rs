@@ -11,8 +11,9 @@ use std::os::windows::process::CommandExt;
 
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{Local, TimeZone};
+use regex::Regex;
 use reqwest::{
-    header::{HeaderMap, USER_AGENT},
+    header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
     Client,
 };
 use serde_yaml::{Mapping, Value};
@@ -133,7 +134,7 @@ pub async fn refresh_local_subscriptions(
 
     let mut downloaded = Vec::new();
     for subscription in &targets {
-        match download_subscription(&client, subscription).await {
+        match download_subscription(&client, subscription, &snapshot).await {
             Ok(value) => downloaded.push(value),
             Err(error) => {
                 mark_subscription_failed(&mut snapshot, &subscription.id);
@@ -161,6 +162,7 @@ pub async fn refresh_local_subscriptions(
                 {
                     subscription.node_count = value.node_count;
                     subscription.last_updated = current_time();
+                    subscription.last_updated_at = Some(Local::now().timestamp());
                     subscription.status = if subscription.enabled {
                         "正常".into()
                     } else {
@@ -498,11 +500,13 @@ pub(crate) fn build_effective_config(
         )?;
     }
 
+    apply_local_proxies(&mut proxies, snapshot)?;
     apply_local_proxy_groups(&mut groups, snapshot)?;
     apply_proxy_group_overrides(&mut groups, snapshot)?;
     apply_node_dialer_overrides(&mut proxies, snapshot);
     apply_local_rules(&mut rules, snapshot);
     apply_rule_overrides(&mut rules, snapshot)?;
+    apply_domain_overrides(root_mapping, &mut rules, snapshot)?;
     apply_default_route(&mut rules, &groups, snapshot);
     root_mapping.insert(key("proxies"), Value::Sequence(proxies));
     root_mapping.insert(key("proxy-groups"), Value::Sequence(groups));
@@ -588,21 +592,136 @@ fn apply_local_proxy_groups(groups: &mut Vec<Value>, snapshot: &AppSnapshot) -> 
             group.group_type.as_str(),
             "Fallback" | "URL-Test" | "Load-Balance"
         ) {
-            value.insert(
-                key("url"),
-                Value::String("https://www.gstatic.com/generate_204".into()),
-            );
-            value.insert(key("interval"), Value::Number(300.into()));
+            value.insert(key("url"), Value::String(group.test_url.clone()));
+            value.insert(key("interval"), Value::Number(group.interval.into()));
+            value.insert(key("lazy"), Value::Bool(!group.auto_test));
+            if group.health_check {
+                value.insert(
+                    key("max-failed-times"),
+                    Value::Number(group.failure_threshold.into()),
+                );
+            }
+        }
+        if group.group_type == "URL-Test" {
+            value.insert(key("tolerance"), Value::Number(group.tolerance.into()));
         }
         if group.group_type == "Load-Balance" {
-            value.insert(key("strategy"), Value::String("round-robin".into()));
+            value.insert(
+                key("strategy"),
+                Value::String(group.load_balance_strategy.clone()),
+            );
         }
+        apply_extra_group_options(&mut value, &group.extra)?;
         if !group.icon.trim().is_empty() {
             value.insert(key("icon"), Value::String(group.icon.clone()));
         }
         groups.push(Value::Mapping(value));
     }
 
+    Ok(())
+}
+
+fn apply_local_proxies(proxies: &mut Vec<Value>, snapshot: &AppSnapshot) -> Result<(), String> {
+    let mut existing_names = proxies
+        .iter()
+        .filter_map(item_name)
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
+
+    for node in snapshot.nodes.iter().filter(|node| node.origin == "local") {
+        if !existing_names.insert(node.name.clone()) {
+            return Err(format!("本地节点“{}”与订阅节点重名", node.name));
+        }
+        let password = node
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("本地节点“{}”缺少认证信息", node.name))?;
+        let mut proxy = Mapping::new();
+        proxy.insert(key("name"), Value::String(node.name.clone()));
+        proxy.insert(key("server"), Value::String(node.address.clone()));
+        proxy.insert(key("port"), Value::Number(node.port.into()));
+        proxy.insert(key("udp"), Value::Bool(true));
+        match node.protocol.to_ascii_lowercase().as_str() {
+            "shadowsocks" | "ss" => {
+                proxy.insert(key("type"), Value::String("ss".into()));
+                proxy.insert(
+                    key("cipher"),
+                    Value::String(node.cipher.clone().unwrap_or_else(|| "aes-128-gcm".into())),
+                );
+                proxy.insert(key("password"), Value::String(password.into()));
+            }
+            "vmess" => {
+                proxy.insert(key("type"), Value::String("vmess".into()));
+                proxy.insert(key("uuid"), Value::String(password.into()));
+                proxy.insert(key("alterId"), Value::Number(0.into()));
+                proxy.insert(key("cipher"), Value::String("auto".into()));
+            }
+            "trojan" => {
+                proxy.insert(key("type"), Value::String("trojan".into()));
+                proxy.insert(key("password"), Value::String(password.into()));
+            }
+            "hysteria2" | "hy2" => {
+                proxy.insert(key("type"), Value::String("hysteria2".into()));
+                proxy.insert(key("password"), Value::String(password.into()));
+            }
+            protocol => {
+                return Err(format!(
+                    "本地节点“{}”使用了不支持的协议 {protocol}",
+                    node.name
+                ));
+            }
+        }
+        if let Some(dialer_proxy) = node
+            .dialer_proxy
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            proxy.insert(
+                key("dialer-proxy"),
+                Value::String(dialer_proxy.trim().into()),
+            );
+        }
+        proxies.push(Value::Mapping(proxy));
+    }
+    Ok(())
+}
+
+fn apply_extra_group_options(group: &mut Mapping, raw: &str) -> Result<(), String> {
+    const RESERVED: [&str; 9] = [
+        "name",
+        "type",
+        "proxies",
+        "use",
+        "url",
+        "interval",
+        "tolerance",
+        "strategy",
+        "icon",
+    ];
+    for option in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let Some((name, value)) = option.split_once('=') else {
+            return Err(format!("代理组附加参数“{option}”必须使用 key=value 格式"));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("代理组附加参数名称不能为空".into());
+        }
+        if RESERVED.contains(&name) {
+            return Err(format!("代理组附加参数不能覆盖保留字段 {name}"));
+        }
+        let parsed = serde_yaml::from_str::<Value>(value.trim())
+            .map_err(|error| format!("代理组附加参数 {name} 无效：{error}"))?;
+        if matches!(parsed, Value::Mapping(_) | Value::Sequence(_)) {
+            return Err(format!("代理组附加参数 {name} 仅支持标量值"));
+        }
+        group.insert(key(name), parsed);
+    }
     Ok(())
 }
 
@@ -760,6 +879,70 @@ fn apply_rule_overrides(rules: &mut Vec<Value>, snapshot: &AppSnapshot) -> Resul
     }
 
     Ok(())
+}
+
+fn apply_domain_overrides(
+    root: &mut Mapping,
+    rules: &mut Vec<Value>,
+    snapshot: &AppSnapshot,
+) -> Result<(), String> {
+    let mut hosts = root
+        .remove(key("hosts"))
+        .map(|value| {
+            value
+                .as_mapping()
+                .cloned()
+                .ok_or_else(|| "基础配置的 hosts 必须是 YAML 对象".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mut override_rules = Vec::new();
+
+    for item in snapshot.domain_overrides.iter().filter(|item| item.enabled) {
+        let pattern = item.item_match.trim();
+        if pattern.is_empty() {
+            continue;
+        }
+        match item.operation.as_str() {
+            "删除" => {
+                hosts.remove(key(pattern));
+            }
+            "阻止" | "策略" => {
+                let target = if item.operation == "阻止" {
+                    "REJECT"
+                } else if !item.strategy.trim().is_empty() {
+                    item.strategy.trim()
+                } else {
+                    item.value.trim()
+                };
+                let (rule_type, content) = domain_rule_signature(&item.match_type, pattern);
+                override_rules.push(Value::String(format!("{rule_type},{content},{target}")));
+            }
+            "设置" | "Hosts" | "重定向" => {
+                hosts.insert(key(pattern), Value::String(item.value.trim().into()));
+            }
+            operation => return Err(format!("不支持的域名覆写操作：{operation}")),
+        }
+    }
+
+    if !hosts.is_empty() {
+        root.insert(key("hosts"), Value::Mapping(hosts));
+    }
+    if !override_rules.is_empty() {
+        override_rules.append(rules);
+        *rules = override_rules;
+    }
+    Ok(())
+}
+
+fn domain_rule_signature(match_type: &str, pattern: &str) -> (&'static str, String) {
+    match match_type {
+        "域名通配符" if pattern.starts_with("*.") => {
+            ("DOMAIN-SUFFIX", pattern.trim_start_matches("*.").into())
+        }
+        "正则表达式" => ("DOMAIN-REGEX", pattern.into()),
+        _ => ("DOMAIN", pattern.into()),
+    }
 }
 
 fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<(), String> {
@@ -1186,7 +1369,10 @@ fn merge_parsed_subscription(
         }
         ParsedSubscription::ProviderContent => {
             let provider_name = provider_name(&subscription.id);
-            let provider = file_provider(&subscription_cache_relative_path(&subscription.id));
+            let provider = file_provider(
+                &subscription_cache_relative_path(&subscription.id),
+                subscription,
+            );
             merge_mapping(
                 providers,
                 Mapping::from_iter([(Value::String(provider_name.clone()), provider)]),
@@ -1276,14 +1462,31 @@ fn parse_subscription(content: &str) -> Result<ParsedSubscription, String> {
 async fn download_subscription(
     client: &Client,
     subscription: &Subscription,
+    snapshot: &AppSnapshot,
 ) -> Result<DownloadedSubscription, String> {
     let url = subscription.url.trim();
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("仅支持 HTTP/HTTPS 订阅链接".into());
     }
+    let mut request_headers = HeaderMap::new();
+    let user_agent = subscription
+        .user_agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(SUBSCRIPTION_USER_AGENT);
+    request_headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(user_agent).map_err(|error| format!("User-Agent 无效：{error}"))?,
+    );
+    for (name, value) in &subscription.headers {
+        set_header(&mut request_headers, name, value)?;
+    }
+    apply_http_header_overrides(&mut request_headers, url, &snapshot.request_overrides)?;
+
     let response = client
         .get(url)
-        .header(USER_AGENT, SUBSCRIPTION_USER_AGENT)
+        .headers(request_headers)
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -1298,7 +1501,8 @@ async fn download_subscription(
         return Err("订阅内容超过 16 MB，已停止下载".into());
     }
 
-    let headers = response.headers().clone();
+    let mut headers = response.headers().clone();
+    apply_http_header_overrides(&mut headers, url, &snapshot.response_overrides)?;
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     if bytes.len() > MAX_SUBSCRIPTION_BYTES {
         return Err("订阅内容超过 16 MB，已停止解析".into());
@@ -1316,6 +1520,59 @@ async fn download_subscription(
         used_traffic,
         expires_at,
     })
+}
+
+fn set_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), String> {
+    let name = HeaderName::from_bytes(name.trim().as_bytes())
+        .map_err(|error| format!("请求头名称“{name}”无效：{error}"))?;
+    let value = HeaderValue::from_str(value.trim())
+        .map_err(|error| format!("请求头 {name} 的值无效：{error}"))?;
+    headers.insert(name, value);
+    Ok(())
+}
+
+fn apply_http_header_overrides(
+    headers: &mut HeaderMap,
+    url: &str,
+    overrides: &[crate::models::OverrideItem],
+) -> Result<(), String> {
+    for item in overrides.iter().filter(|item| item.enabled) {
+        if !override_matches_url(&item.match_type, &item.item_match, url)? {
+            continue;
+        }
+        let name = item.field.trim();
+        if name.is_empty() {
+            return Err("请求头或响应头覆写缺少字段名".into());
+        }
+        if item.operation == "删除" {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|error| format!("覆写头名称“{name}”无效：{error}"))?;
+            headers.remove(name);
+        } else {
+            set_header(headers, name, &item.value)?;
+        }
+    }
+    Ok(())
+}
+
+fn override_matches_url(match_type: &str, pattern: &str, raw_url: &str) -> Result<bool, String> {
+    let url = reqwest::Url::parse(raw_url).map_err(|error| format!("订阅 URL 无效：{error}"))?;
+    let host = url.host_str().unwrap_or_default();
+    let pattern = pattern.trim();
+    match match_type {
+        "域名" => Ok(host.eq_ignore_ascii_case(pattern)),
+        "域名通配符" => {
+            let suffix = pattern.trim_start_matches("*.");
+            Ok(host.eq_ignore_ascii_case(suffix)
+                || host
+                    .to_ascii_lowercase()
+                    .ends_with(&format!(".{}", suffix.to_ascii_lowercase())))
+        }
+        "正则表达式" => Regex::new(pattern)
+            .map(|regex| regex.is_match(raw_url))
+            .map_err(|error| format!("覆写正则表达式无效：{error}")),
+        _ => Ok(false),
+    }
 }
 
 fn parsed_node_count(parsed: &ParsedSubscription, content: &str) -> usize {
@@ -1455,10 +1712,20 @@ fn generated_group(name: &str, proxies: &[String], providers: &[String]) -> Valu
     Value::Mapping(group)
 }
 
-fn file_provider(relative_path: &str) -> Value {
+fn file_provider(relative_path: &str, subscription: &Subscription) -> Value {
     let mut provider = Mapping::new();
     provider.insert(key("type"), Value::String("file".into()));
     provider.insert(key("path"), Value::String(relative_path.to_string()));
+    if subscription.health_check {
+        let mut health_check = Mapping::new();
+        health_check.insert(key("enable"), Value::Bool(true));
+        health_check.insert(key("url"), Value::String(subscription.test_url.clone()));
+        health_check.insert(
+            key("interval"),
+            Value::Number((subscription.update_interval.max(1) * 3600).into()),
+        );
+        provider.insert(key("health-check"), Value::Mapping(health_check));
+    }
     Value::Mapping(provider)
 }
 
@@ -1592,6 +1859,7 @@ fn mark_subscription_failed(snapshot: &mut AppSnapshot, id: &str) {
         .find(|subscription| subscription.id == id)
     {
         subscription.last_updated = current_time();
+        subscription.last_updated_at = Some(Local::now().timestamp());
         subscription.status = "更新失败".into();
     }
 }
@@ -1847,6 +2115,13 @@ mod tests {
             current_node_id: None,
             auto_test: false,
             allow_manual: true,
+            test_url: "https://www.gstatic.com/generate_204".into(),
+            interval: 300,
+            tolerance: 50,
+            load_balance_strategy: "round-robin".into(),
+            health_check: true,
+            failure_threshold: 3,
+            extra: String::new(),
         }
     }
 
@@ -1874,6 +2149,165 @@ mod tests {
             proxy.insert(key("dialer-proxy"), Value::String(dialer_proxy.into()));
         }
         Value::Mapping(proxy)
+    }
+
+    #[test]
+    fn serializes_local_nodes_into_mihomo_proxies() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.nodes.push(ProxyNode {
+            id: "local-node".into(),
+            name: "本地 SS".into(),
+            country: None,
+            flag: None,
+            protocol: "Shadowsocks".into(),
+            address: "ss.example.com".into(),
+            port: 8388,
+            latency: 0,
+            password: Some("secret".into()),
+            cipher: Some("aes-128-gcm".into()),
+            dialer_proxy: Some("前置代理".into()),
+            group: None,
+            origin: "local".into(),
+            available: true,
+        });
+        let mut proxies = Vec::new();
+
+        apply_local_proxies(&mut proxies, &snapshot).expect("本地节点应可序列化");
+
+        let proxy = proxies[0].as_mapping().expect("代理应为 YAML 对象");
+        assert_eq!(proxy.get(key("type")).and_then(Value::as_str), Some("ss"));
+        assert_eq!(
+            proxy.get(key("server")).and_then(Value::as_str),
+            Some("ss.example.com")
+        );
+        assert_eq!(
+            proxy.get(key("dialer-proxy")).and_then(Value::as_str),
+            Some("前置代理")
+        );
+    }
+
+    #[test]
+    fn serializes_proxy_group_advanced_settings() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        let mut group = proxy_group("auto", "自动选择", "local", Vec::new());
+        group.group_type = "URL-Test".into();
+        group.node_ids = vec!["node-a".into()];
+        group.test_url = "https://example.com/ping".into();
+        group.interval = 90;
+        group.tolerance = 25;
+        group.failure_threshold = 2;
+        snapshot.groups.push(group);
+        snapshot.nodes.push(ProxyNode {
+            id: "node-a".into(),
+            name: "节点 A".into(),
+            country: None,
+            flag: None,
+            protocol: "ss".into(),
+            address: "example.com".into(),
+            port: 443,
+            latency: 0,
+            password: None,
+            cipher: None,
+            dialer_proxy: None,
+            group: None,
+            origin: "managed".into(),
+            available: true,
+        });
+        let mut groups = Vec::new();
+
+        apply_local_proxy_groups(&mut groups, &snapshot).expect("代理组应可序列化");
+
+        let group = groups[0].as_mapping().expect("代理组应为 YAML 对象");
+        assert_eq!(group.get(key("interval")).and_then(Value::as_u64), Some(90));
+        assert_eq!(
+            group.get(key("tolerance")).and_then(Value::as_u64),
+            Some(25)
+        );
+        assert_eq!(
+            group.get(key("max-failed-times")).and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(group.get(key("lazy")).and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn applies_subscription_header_overrides_by_domain_and_regex() {
+        let mut headers = HeaderMap::new();
+        let overrides = vec![
+            crate::models::OverrideItem {
+                id: "auth".into(),
+                match_type: "域名通配符".into(),
+                item_match: "*.example.com".into(),
+                operation: "设置".into(),
+                field: "Authorization".into(),
+                value: "Bearer token".into(),
+                strategy: "请求头".into(),
+                enabled: true,
+            },
+            crate::models::OverrideItem {
+                id: "client".into(),
+                match_type: "正则表达式".into(),
+                item_match: "/subscription$".into(),
+                operation: "设置".into(),
+                field: "X-Client".into(),
+                value: "clash-mg".into(),
+                strategy: "请求头".into(),
+                enabled: true,
+            },
+        ];
+
+        apply_http_header_overrides(
+            &mut headers,
+            "https://sub.example.com/subscription",
+            &overrides,
+        )
+        .expect("覆写应成功");
+
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer token");
+        assert_eq!(headers.get("x-client").unwrap(), "clash-mg");
+    }
+
+    #[test]
+    fn applies_domain_overrides_to_hosts_and_routing_rules() {
+        let mut snapshot = crate::defaults::default_snapshot();
+        snapshot.domain_overrides.extend([
+            crate::models::OverrideItem {
+                id: "host".into(),
+                match_type: "域名".into(),
+                item_match: "api.example.com".into(),
+                operation: "Hosts".into(),
+                field: "目标值".into(),
+                value: "127.0.0.1".into(),
+                strategy: "覆盖".into(),
+                enabled: true,
+            },
+            crate::models::OverrideItem {
+                id: "block".into(),
+                match_type: "域名通配符".into(),
+                item_match: "*.ads.example.com".into(),
+                operation: "阻止".into(),
+                field: "目标值".into(),
+                value: "REJECT".into(),
+                strategy: "覆盖".into(),
+                enabled: true,
+            },
+        ]);
+        let mut root = Mapping::new();
+        let mut rules = vec![Value::String("MATCH,DIRECT".into())];
+
+        apply_domain_overrides(&mut root, &mut rules, &snapshot).expect("域名覆写应成功");
+
+        assert_eq!(
+            root.get(key("hosts"))
+                .and_then(Value::as_mapping)
+                .and_then(|hosts| hosts.get(key("api.example.com")))
+                .and_then(Value::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            rules.first().and_then(Value::as_str),
+            Some("DOMAIN-SUFFIX,ads.example.com,REJECT")
+        );
     }
 
     #[test]
@@ -2011,6 +2445,11 @@ mod tests {
             auto_update: true,
             proxy_update: true,
             allow_override,
+            user_agent: None,
+            headers: HashMap::new(),
+            health_check: true,
+            test_url: "https://www.gstatic.com/generate_204".into(),
+            last_updated_at: None,
             description: None,
             used_traffic: "0 B".into(),
             expires_at: "未知".into(),
@@ -2374,6 +2813,13 @@ mod tests {
                 current_node_id: Some("node-hk".into()),
                 auto_test: false,
                 allow_manual: true,
+                test_url: "https://www.gstatic.com/generate_204".into(),
+                interval: 300,
+                tolerance: 50,
+                load_balance_strategy: "round-robin".into(),
+                health_check: true,
+                failure_threshold: 3,
+                extra: String::new(),
             },
             crate::models::ProxyGroup {
                 id: "group-kept".into(),
@@ -2387,6 +2833,13 @@ mod tests {
                 current_node_id: Some("node-us".into()),
                 auto_test: false,
                 allow_manual: true,
+                test_url: "https://www.gstatic.com/generate_204".into(),
+                interval: 300,
+                tolerance: 50,
+                load_balance_strategy: "round-robin".into(),
+                health_check: true,
+                failure_threshold: 3,
+                extra: String::new(),
             },
         ]);
         snapshot.rules.extend([

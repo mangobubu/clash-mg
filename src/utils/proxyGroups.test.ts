@@ -25,6 +25,13 @@ const group = (
   currentNodeId,
   autoTest: false,
   allowManual: true,
+  testUrl: "https://www.gstatic.com/generate_204",
+  interval: 300,
+  tolerance: 50,
+  loadBalanceStrategy: "round-robin",
+  healthCheck: true,
+  failureThreshold: 3,
+  extra: "",
 });
 
 const node = (id: string, latency: number): ProxyNode => ({

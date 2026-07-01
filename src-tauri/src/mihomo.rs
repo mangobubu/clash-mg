@@ -808,6 +808,13 @@ fn apply_proxies(snapshot: &mut AppSnapshot, value: &Value) -> ProxySyncResult {
                 current_node_id: None,
                 auto_test: group_type == "URL-Test" || group_type == "Fallback",
                 allow_manual,
+                test_url: "https://www.gstatic.com/generate_204".into(),
+                interval: 300,
+                tolerance: 50,
+                load_balance_strategy: "round-robin".into(),
+                health_check: true,
+                failure_threshold: 3,
+                extra: String::new(),
             });
         runtime_group.id = group_id;
         runtime_group.group_type = group_type;
@@ -1542,6 +1549,13 @@ mod tests {
             current_node_id: None,
             auto_test: false,
             allow_manual: true,
+            test_url: "https://www.gstatic.com/generate_204".into(),
+            interval: 300,
+            tolerance: 50,
+            load_balance_strategy: "round-robin".into(),
+            health_check: true,
+            failure_threshold: 3,
+            extra: String::new(),
         });
         let proxies = json!({
             "proxies": {

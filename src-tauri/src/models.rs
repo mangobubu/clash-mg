@@ -5,7 +5,7 @@ use serde_json::Value;
 
 pub type SettingsMap = HashMap<String, Value>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
     Light,
@@ -55,6 +55,44 @@ pub struct ProxyGroup {
     pub current_node_id: Option<String>,
     pub auto_test: bool,
     pub allow_manual: bool,
+    #[serde(default = "default_proxy_group_test_url")]
+    pub test_url: String,
+    #[serde(default = "default_proxy_group_interval")]
+    pub interval: u32,
+    #[serde(default = "default_proxy_group_tolerance")]
+    pub tolerance: u32,
+    #[serde(default = "default_load_balance_strategy")]
+    pub load_balance_strategy: String,
+    #[serde(default = "default_true")]
+    pub health_check: bool,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default)]
+    pub extra: String,
+}
+
+fn default_proxy_group_test_url() -> String {
+    "https://www.gstatic.com/generate_204".into()
+}
+
+fn default_proxy_group_interval() -> u32 {
+    300
+}
+
+fn default_proxy_group_tolerance() -> u32 {
+    50
+}
+
+fn default_load_balance_strategy() -> String {
+    "round-robin".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_failure_threshold() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +127,16 @@ pub struct Subscription {
     pub auto_update: bool,
     pub proxy_update: bool,
     pub allow_override: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub health_check: bool,
+    #[serde(default = "default_proxy_group_test_url")]
+    pub test_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub used_traffic: String,
@@ -105,7 +153,7 @@ impl Subscription {
 
 #[cfg(test)]
 mod subscription_tests {
-    use super::Subscription;
+    use super::*;
 
     fn subscription(description: Option<&str>, tags: &[&str]) -> Subscription {
         Subscription {
@@ -121,6 +169,11 @@ mod subscription_tests {
             auto_update: true,
             proxy_update: true,
             allow_override: false,
+            user_agent: None,
+            headers: HashMap::new(),
+            health_check: true,
+            test_url: default_proxy_group_test_url(),
+            last_updated_at: None,
             description: description.map(ToString::to_string),
             used_traffic: "0 B".into(),
             expires_at: "未知".into(),
@@ -228,7 +281,7 @@ pub struct Activity {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverrideItem {
     pub id: String,

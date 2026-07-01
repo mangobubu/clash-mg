@@ -35,6 +35,20 @@ import { useAppStore } from "../store/useAppStore";
 import type { Subscription, SubscriptionType } from "../types";
 
 const { Text, Title } = Typography;
+const { TextArea } = Input;
+
+function parseRequestHeaders(value?: string): Record<string, string> {
+  if (!value?.trim()) return {};
+  return Object.fromEntries(value.split(/\r?\n/).map((line) => {
+    const separator = line.indexOf(":");
+    if (separator <= 0) throw new Error(`请求头格式无效：${line}`);
+    return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+  }).filter(([name]) => Boolean(name)));
+}
+
+function formatRequestHeaders(headers: Record<string, string>) {
+  return Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join("\n");
+}
 
 interface SubscriptionFormValues {
   type: SubscriptionType;
@@ -94,15 +108,23 @@ export function SubscriptionsPage() {
     setEditing(subscription);
     form.setFieldsValue({
       type: subscription.type, name: subscription.name, url: subscription.url, description: subscription.description,
+      userAgent: subscription.userAgent, headers: formatRequestHeaders(subscription.headers),
       autoUpdate: subscription.autoUpdate, updateInterval: subscription.updateInterval, proxyUpdate: subscription.proxyUpdate,
-      enabled: subscription.enabled, allowOverride: subscription.allowOverride, healthCheck: true,
-      testUrl: "https://www.gstatic.com/generate_204", format: "Clash Meta (YAML)", tags: subscription.tags.join(", "), preview: true,
+      enabled: subscription.enabled, allowOverride: subscription.allowOverride, healthCheck: subscription.healthCheck,
+      testUrl: subscription.testUrl, format: "Clash Meta (YAML)", tags: subscription.tags.join(", "), preview: true,
     });
     setModalOpen(true);
   };
 
   const saveSubscription = async () => {
     const values = await form.validateFields();
+    let headers: Record<string, string>;
+    try {
+      headers = parseRequestHeaders(values.headers);
+    } catch (error) {
+      message.error(String(error));
+      return;
+    }
     const subscription: Subscription = {
       id: editing?.id ?? crypto.randomUUID(),
       name: values.name,
@@ -116,6 +138,11 @@ export function SubscriptionsPage() {
       autoUpdate: values.autoUpdate,
       proxyUpdate: values.proxyUpdate,
       allowOverride: values.allowOverride,
+      userAgent: values.userAgent?.trim() || undefined,
+      headers,
+      healthCheck: values.healthCheck,
+      testUrl: values.testUrl.trim(),
+      lastUpdatedAt: editing?.lastUpdatedAt,
       description: values.description,
       usedTraffic: editing?.usedTraffic ?? "0 B",
       expiresAt: editing?.expiresAt ?? "未知",
@@ -131,7 +158,7 @@ export function SubscriptionsPage() {
       message.warning("请输入有效的 HTTP/HTTPS 订阅链接");
       return;
     }
-    addSubscription({ id: crypto.randomUUID(), name: `快速订阅 ${subscriptions.length + 1}`, type: "HTTP", url: quickUrl.trim(), nodeCount: 0, lastUpdated: "尚未更新", updateInterval: 12, status: "正常", enabled: true, autoUpdate: true, proxyUpdate: true, allowOverride: false, usedTraffic: "0 B", expiresAt: "未知", tags: ["快速导入"] });
+    addSubscription({ id: crypto.randomUUID(), name: `快速订阅 ${subscriptions.length + 1}`, type: "HTTP", url: quickUrl.trim(), nodeCount: 0, lastUpdated: "尚未更新", updateInterval: 12, status: "正常", enabled: true, autoUpdate: true, proxyUpdate: true, allowOverride: false, headers: {}, healthCheck: true, testUrl: "https://www.gstatic.com/generate_204", usedTraffic: "0 B", expiresAt: "未知", tags: ["快速导入"] });
     setQuickUrl("");
     message.success("订阅链接已保存，点击“立即更新”后将校验并应用到 Mihomo");
   };
@@ -194,7 +221,7 @@ export function SubscriptionsPage() {
     { title: "URL / 地址", dataIndex: "url", ellipsis: true },
     { title: "节点数", dataIndex: "nodeCount", width: 92, align: "center" },
     { title: "上次更新", dataIndex: "lastUpdated", width: 120 },
-    { title: "自动更新", dataIndex: "updateInterval", width: 110, render: (value: number) => value ? `${value} 小时` : "手动" },
+    { title: "自动更新", dataIndex: "updateInterval", width: 110, render: (value: number, record) => record.autoUpdate ? `${value} 小时` : "手动" },
     { title: "状态", dataIndex: "status", width: 110, render: (value: Subscription["status"]) => <StatusDot status={value === "正常" ? "success" : value === "更新失败" ? "error" : "default"}>{value}</StatusDot> },
     {
       title: "操作", key: "actions", width: 150, fixed: "right",
@@ -248,7 +275,7 @@ export function SubscriptionsPage() {
               <Form.Item label="订阅地址 / URL" name="url" rules={[{ required: true, message: "请输入订阅地址" }]}><Input placeholder="例如：https://sub.example.com/xxxx" /></Form.Item>
               <Form.Item label="说明 / 备注" name="description"><Input placeholder="可填写订阅来源、用途等说明" /></Form.Item>
               <Form.Item label="用户代理（可选）" name="userAgent"><Input placeholder="默认使用 Clash Meta 内置 UA" /></Form.Item>
-              <Form.Item label="请求头（可选）" name="headers"><Input placeholder="例如：Authorization: Bearer token" /></Form.Item>
+              <Form.Item label="请求头（可选，每行一个）" name="headers"><TextArea rows={3} placeholder={"Authorization: Bearer token\nX-Client: clash-mg"} /></Form.Item>
               <Form.Item label="本地文件（可选）"><Upload beforeUpload={() => false} maxCount={1}><Button>选择配置文件</Button></Upload></Form.Item>
             </div>
           </Panel>

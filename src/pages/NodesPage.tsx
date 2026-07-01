@@ -77,6 +77,7 @@ export function NodesPage() {
   const [form] = Form.useForm<NodeFormValues>();
   const watchedProxyGroupIds = Form.useWatch("proxyGroupIds", form) ?? [];
   const watchedDialerProxy = Form.useWatch("dialerProxy", form);
+  const watchedProtocol = Form.useWatch("protocol", form);
   const isEditingManagedNode = editingNode ? getNodeOrigin(editingNode) === "managed" : false;
 
   const groupOptions = useMemo(
@@ -466,8 +467,12 @@ export function NodesPage() {
               <Form.Item label="加入代理组" name="proxyGroupIds" className="span-two" rules={isEditingManagedNode ? [] : [{ required: true, message: "请选择至少一个代理组" }]}>
                 <Select mode="multiple" options={proxyGroupOptions} placeholder="选择这个节点要加入的代理组" disabled={isEditingManagedNode} />
               </Form.Item>
-              <Form.Item label="密码" name="password"><Input.Password placeholder="请输入密码" disabled={isEditingManagedNode} /></Form.Item>
-              <Form.Item label="加密方式" name="cipher"><Select options={cipherOptions} disabled={isEditingManagedNode} /></Form.Item>
+              <Form.Item
+                label={watchedProtocol === "VMess" ? "UUID" : "密码 / 认证信息"}
+                name="password"
+                rules={isEditingManagedNode ? [] : [{ required: true, message: watchedProtocol === "VMess" ? "请输入 UUID" : "请输入认证信息" }]}
+              ><Input.Password placeholder={watchedProtocol === "VMess" ? "请输入 VMess UUID" : "请输入密码或认证信息"} disabled={isEditingManagedNode} /></Form.Item>
+              {watchedProtocol === "Shadowsocks" && <Form.Item label="加密方式" name="cipher" rules={[{ required: true, message: "请选择加密方式" }]}><Select options={cipherOptions} disabled={isEditingManagedNode} /></Form.Item>}
               <Form.Item label="备注" name="remark" className="span-two"><Input placeholder="选填，仅用于后续后端保存扩展" disabled={isEditingManagedNode} /></Form.Item>
             </div>
           </Panel>

@@ -172,7 +172,7 @@ export function ProxiesPage() {
   const activeNodeGroup = groups.find((group) => group.id === nodePickerGroupId);
   const isRuntimeManagedGroup = activeNodeGroup ? !activeNodeGroup.allowManual : false;
   const isEditingManagedGroup = editingGroup ? getProxyGroupOrigin(editingGroup) === "managed" : false;
-  const groupSelectableNodes = nodes.slice(0, 8);
+  const groupSelectableNodes = nodes;
   const visibleGroups = groups.filter((group) => !isHiddenBuiltinProxyGroup(group));
   const groupSelectableGroups = getSelectableProxyGroupMembers(groups, editingGroup?.id)
     .filter((group) => !isEditingManagedGroup || getProxyGroupOrigin(group) === "local");
@@ -346,6 +346,13 @@ export function ProxiesPage() {
       icon: group.icon || defaultProxyGroupIcon,
       description: group.description,
       autoTest: group.autoTest,
+      testUrl: group.testUrl,
+      interval: group.interval,
+      tolerance: group.tolerance,
+      loadBalance: group.loadBalanceStrategy,
+      healthCheck: group.healthCheck,
+      failureThreshold: group.failureThreshold,
+      extra: group.extra,
       nodeIds: getProxyGroupOrigin(group) === "managed" ? [] : group.nodeIds,
       groupIds: getProxyGroupOrigin(group) === "managed"
         ? managedOverride?.addedGroupIds ?? []
@@ -389,6 +396,13 @@ export function ProxiesPage() {
       currentNodeId,
       autoTest: values.autoTest,
       allowManual: values.type === "Selector" || values.type === "Fallback",
+      testUrl: values.testUrl.trim(),
+      interval: values.interval,
+      tolerance: values.tolerance,
+      loadBalanceStrategy: values.loadBalance,
+      healthCheck: values.healthCheck,
+      failureThreshold: values.failureThreshold,
+      extra: values.extra?.trim() ?? "",
     };
 
     if (editingGroup) {

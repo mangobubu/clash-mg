@@ -114,7 +114,7 @@ export function SettingsPage() {
   });
 
   const title = t(activeSection === "dns" ? "DNS 设置" : activeSection === "override" ? "覆写设置" : definition.title);
-  const description = t(activeSection === "dns" ? "管理 DNS 服务器、增强模式与解析规则。" : activeSection === "override" ? "管理域名、请求头与响应头覆写规则。" : definition.description);
+  const description = t(activeSection === "dns" ? "管理 DNS 服务器、增强模式与解析规则。" : activeSection === "override" ? "管理 Mihomo 域名规则及订阅下载请求、响应头覆写。" : definition.description);
 
   return (
     <div className="page-stack settings-page">
@@ -224,7 +224,7 @@ function OverrideSettings() {
       {renderSection("域名覆写", "domain", domainOverrides)}
       {renderSection("请求头覆写", "request", requestOverrides)}
       {renderSection("响应头覆写", "response", responseOverrides)}
-      <div className="hint-bar">提示：覆写规则按照列表顺序从上到下匹配，命中后立即生效。</div>
+      <div className="hint-bar">域名覆写写入 Mihomo 配置；请求头与响应头覆写仅作用于应用发起的订阅下载，并按列表顺序依次应用。</div>
       <Modal open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => void saveOverride()} title={editing ? "编辑覆写规则" : "新增覆写规则"} okText="保存" cancelText="取消" width={680} destroyOnHidden>
         <Form<OverrideItem> form={form} layout="vertical">
           <div className="form-grid two-columns">

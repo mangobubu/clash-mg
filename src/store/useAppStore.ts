@@ -32,7 +32,9 @@ let connectionRefreshRevision = 0;
 let runtimeRefreshRevision = 0;
 let stateRevision = 0;
 let persistenceReady = false;
+let persistenceChain: Promise<void> = Promise.resolve();
 const closingConnectionIds = new Set<string>();
+const isStandaloneAppWindow = () => /^#\/(?:connections-window|connection-detail\/)/.test(window.location.hash);
 
 const isRuntimeProviderRecord = (subscription: Subscription) =>
   subscription.description === "来自 Mihomo Proxy Provider" && subscription.tags.includes("Provider");
@@ -71,7 +73,7 @@ const toAppData = (state: AppState): AppData => ({
   runtime: state.runtime,
 });
 
-const persistCurrentState = async () => {
+const persistSnapshotNow = async () => {
   if (!persistenceReady) throw new Error("应用数据尚未成功加载，已阻止覆盖本地状态文件");
   try {
     await saveAppSnapshot(toAppData(useAppStore.getState()));
@@ -89,9 +91,24 @@ const persistCurrentState = async () => {
   }
 };
 
+const persistCurrentState = () => {
+  const operation = persistenceChain
+    .catch(() => undefined)
+    .then(() => persistSnapshotNow());
+  persistenceChain = operation;
+  return operation;
+};
+
+const flushPendingPersistence = async () => {
+  if (isStandaloneAppWindow()) return;
+  window.clearTimeout(persistTimer);
+  persistTimer = undefined;
+  await persistCurrentState();
+};
+
 const queuePersist = () => {
   stateRevision += 1;
-  if (!persistenceReady) return;
+  if (!persistenceReady || isStandaloneAppWindow()) return;
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => {
     persistTimer = undefined;
@@ -110,7 +127,17 @@ const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
         ? { ...node, dialerProxy: override.dialerProxy ?? undefined }
         : node;
     }),
-    groups: snapshot.groups.map((group) => ({ ...group, groupIds: group.groupIds ?? [] })),
+    groups: snapshot.groups.map((group) => ({
+      ...group,
+      groupIds: group.groupIds ?? [],
+      testUrl: group.testUrl ?? "https://www.gstatic.com/generate_204",
+      interval: group.interval ?? 300,
+      tolerance: group.tolerance ?? 50,
+      loadBalanceStrategy: group.loadBalanceStrategy ?? "round-robin",
+      healthCheck: group.healthCheck ?? true,
+      failureThreshold: group.failureThreshold ?? 3,
+      extra: group.extra ?? "",
+    })),
     proxyGroupOverrides: snapshot.proxyGroupOverrides ?? [],
     nodeDialerOverrides,
     connections: snapshot.connections
@@ -123,7 +150,14 @@ const applySnapshot = (snapshot: AppData, backendAvailable = true) => {
         chain: connection.chain ?? [connection.policy],
       })),
     ruleOverrides: snapshot.ruleOverrides ?? [],
-    subscriptions: snapshot.subscriptions.filter((subscription) => !isRuntimeProviderRecord(subscription)),
+    subscriptions: snapshot.subscriptions
+      .filter((subscription) => !isRuntimeProviderRecord(subscription))
+      .map((subscription) => ({
+        ...subscription,
+        headers: subscription.headers ?? {},
+        healthCheck: subscription.healthCheck ?? true,
+        testUrl: subscription.testUrl ?? "https://www.gstatic.com/generate_204",
+      })),
     hydrated: true,
     backendAvailable,
   });
@@ -269,6 +303,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
   selectProxy: async (proxyId, groupId) => {
+    await flushPendingPersistence();
     const initial = get();
     const targetGroupId = groupId ?? initial.selectedGroupId;
     const targetGroup = initial.groups.find((group) => group.id === targetGroupId);
@@ -437,11 +472,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
   deleteSubscription: async (id) => {
-    window.clearTimeout(persistTimer);
+    await flushPendingPersistence();
     const snapshot = await deleteLocalSubscription(toAppData(get()), id);
     applyCommittedSnapshot(snapshot, get().backendAvailable);
   },
   refreshSubscriptions: async (ids) => {
+    await flushPendingPersistence();
     const current = get();
     const targets = current.subscriptions.filter((subscription) => !ids || ids.includes(subscription.id));
     const result = createSubscriptionRefreshResult();
@@ -530,6 +566,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   closeConnections: async (ids) => {
     const uniqueIds = [...new Set(ids)].filter((id) => !closingConnectionIds.has(id));
     if (!uniqueIds.length) return;
+    await flushPendingPersistence();
     const previousConnections = get().connections;
 
     connectionRefreshRevision += 1;
@@ -563,7 +600,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   clearClosedConnections: () => {
     set((state) => ({ connections: state.connections.filter((connection) => connection.status !== "已关闭") }));
-    queuePersist();
   },
   clearLogs: () => {
     set({ logs: [] });
@@ -582,9 +618,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
   saveSettings: async () => {
-    window.clearTimeout(persistTimer);
-    persistTimer = undefined;
-    await persistCurrentState();
+    await flushPendingPersistence();
   },
   applyTunMode: async (enabled) => {
     const current = get();
@@ -593,6 +627,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     window.clearTimeout(persistTimer);
     persistTimer = undefined;
+    await persistenceChain.catch(() => undefined);
     const nextSettings = { ...current.settings, tunMode: enabled };
     const nextSnapshot = toAppData({ ...current, settings: nextSettings });
 

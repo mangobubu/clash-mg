@@ -44,6 +44,17 @@ struct ConnectionDetailSnapshots(Mutex<HashMap<String, models::Connection>>);
 #[derive(Default)]
 struct AppExitState(AtomicU8);
 
+#[derive(Default)]
+struct AppMutationState(tokio::sync::Mutex<()>);
+
+#[derive(Default)]
+struct AppliedSaveEffects {
+    core: bool,
+    system_proxy: bool,
+    autostart: bool,
+    firewall: bool,
+}
+
 impl AppExitState {
     fn is_ready(&self) -> bool {
         self.0.load(Ordering::Acquire) == EXIT_READY
@@ -195,15 +206,41 @@ async fn get_app_snapshot(app: tauri::AppHandle) -> Result<AppSnapshot, String> 
 }
 
 #[tauri::command]
-async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Result<(), String> {
-    let previous = storage::load_snapshot(&app)?;
+async fn save_app_snapshot(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
+    snapshot: AppSnapshot,
+) -> Result<(), String> {
+    let _guard = state.0.lock().await;
+    save_app_snapshot_locked(&app, snapshot).await
+}
+
+async fn save_app_snapshot_locked(
+    app: &tauri::AppHandle,
+    mut snapshot: AppSnapshot,
+) -> Result<(), String> {
+    let previous = storage::load_snapshot(app)?;
+    merge_newer_subscription_runtime(&previous, &mut snapshot);
     let effective_config_changed =
         core::runtime_config_changed(&previous.settings, &snapshot.settings)
             || core::proxy_config_changed(&previous, &snapshot)
-            || core::rule_config_changed(&previous, &snapshot);
+            || core::rule_config_changed(&previous, &snapshot)
+            || core::override_config_changed(&previous, &snapshot)
+            || core::subscription_config_changed(&previous, &snapshot);
+    let mut applied = AppliedSaveEffects::default();
     if effective_config_changed {
-        core::sync_runtime_config(&app, &snapshot).await?;
+        applied.core = true;
+        if let Err(error) = core::sync_runtime_config(app, &snapshot).await {
+            return Err(rollback_save_effects(
+                app,
+                &previous,
+                applied,
+                format!("应用运行配置失败：{error}"),
+            )
+            .await);
+        }
     }
+
     let system_proxy_enabled = setting_bool(&snapshot.settings, "systemProxy", false);
     let system_proxy_changed =
         setting_bool(&previous.settings, "systemProxy", false) != system_proxy_enabled;
@@ -212,18 +249,38 @@ async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Resu
     let system_proxy_requires_apply =
         system_proxy_changed || (system_proxy_enabled && mixed_port_changed);
     if system_proxy_requires_apply {
-        system_proxy::apply(
-            &app,
+        applied.system_proxy = true;
+        if let Err(error) = system_proxy::apply(
+            app,
             system_proxy_enabled,
             setting_u16(&snapshot.settings, "mixedPort", 7890),
-        )?;
+        ) {
+            return Err(rollback_save_effects(
+                app,
+                &previous,
+                applied,
+                format!("应用系统代理失败：{error}"),
+            )
+            .await);
+        }
     }
+
     let autostart_enabled = setting_bool(&snapshot.settings, "launchAtStartup", false);
     let autostart_changed =
         setting_bool(&previous.settings, "launchAtStartup", false) != autostart_enabled;
     if autostart_changed {
-        autostart::apply(&app, autostart_enabled)?;
+        applied.autostart = true;
+        if let Err(error) = autostart::apply(app, autostart_enabled) {
+            return Err(rollback_save_effects(
+                app,
+                &previous,
+                applied,
+                format!("应用开机启动设置失败：{error}"),
+            )
+            .await);
+        }
     }
+
     let firewall_enabled = setting_bool(&snapshot.settings, "firewall", false);
     let firewall_changed = setting_bool(&previous.settings, "firewall", false) != firewall_enabled
         || (firewall_enabled
@@ -232,54 +289,92 @@ async fn save_app_snapshot(app: tauri::AppHandle, snapshot: AppSnapshot) -> Resu
                 .any(|key| previous.settings.get(*key) != snapshot.settings.get(*key)));
     if firewall_changed {
         if let Err(error) = firewall::apply(&snapshot.settings, firewall_enabled) {
-            if autostart_changed {
-                let _ = autostart::apply(
-                    &app,
-                    setting_bool(&previous.settings, "launchAtStartup", false),
-                );
-            }
-            return Err(error);
+            applied.firewall = true;
+            return Err(rollback_save_effects(
+                app,
+                &previous,
+                applied,
+                format!("应用防火墙设置失败：{error}"),
+            )
+            .await);
         }
+        applied.firewall = true;
     }
-    if let Err(error) = storage::save_snapshot(&app, &snapshot) {
-        let mut rollback_errors = Vec::new();
-        if effective_config_changed {
-            if let Err(rollback_error) = core::sync_runtime_config(&app, &previous).await {
-                rollback_errors.push(format!("恢复运行配置失败：{rollback_error}"));
-            }
-        }
-        if system_proxy_requires_apply {
-            if let Err(rollback_error) = system_proxy::apply(
-                &app,
-                setting_bool(&previous.settings, "systemProxy", false),
-                setting_u16(&previous.settings, "mixedPort", 7890),
-            ) {
-                rollback_errors.push(format!("恢复系统代理失败：{rollback_error}"));
-            }
-        }
-        if autostart_changed {
-            if let Err(rollback_error) = autostart::apply(
-                &app,
-                setting_bool(&previous.settings, "launchAtStartup", false),
-            ) {
-                rollback_errors.push(format!("恢复开机启动设置失败：{rollback_error}"));
-            }
-        }
-        if firewall_changed {
-            if let Err(rollback_error) = firewall::apply(
-                &previous.settings,
-                setting_bool(&previous.settings, "firewall", false),
-            ) {
-                rollback_errors.push(format!("恢复防火墙设置失败：{rollback_error}"));
-            }
-        }
-        return Err(if rollback_errors.is_empty() {
-            format!("保存应用状态失败：{error}；已恢复原运行状态")
-        } else {
-            format!("保存应用状态失败：{error}；{}", rollback_errors.join("；"))
-        });
+
+    if let Err(error) = storage::save_snapshot(app, &snapshot) {
+        return Err(rollback_save_effects(
+            app,
+            &previous,
+            applied,
+            format!("保存应用状态失败：{error}"),
+        )
+        .await);
     }
     Ok(())
+}
+
+fn merge_newer_subscription_runtime(previous: &AppSnapshot, incoming: &mut AppSnapshot) {
+    for subscription in &previous.subscriptions {
+        let Some(target) = incoming
+            .subscriptions
+            .iter_mut()
+            .find(|item| item.id == subscription.id)
+        else {
+            continue;
+        };
+        if subscription.last_updated_at > target.last_updated_at {
+            target.node_count = subscription.node_count;
+            target.last_updated = subscription.last_updated.clone();
+            target.last_updated_at = subscription.last_updated_at;
+            target.status = subscription.status.clone();
+            target.used_traffic = subscription.used_traffic.clone();
+            target.expires_at = subscription.expires_at.clone();
+        }
+    }
+}
+
+async fn rollback_save_effects(
+    app: &tauri::AppHandle,
+    previous: &AppSnapshot,
+    applied: AppliedSaveEffects,
+    original_error: String,
+) -> String {
+    let mut errors = Vec::new();
+    if applied.firewall {
+        if let Err(error) = firewall::apply(
+            &previous.settings,
+            setting_bool(&previous.settings, "firewall", false),
+        ) {
+            errors.push(format!("恢复防火墙失败：{error}"));
+        }
+    }
+    if applied.autostart {
+        if let Err(error) = autostart::apply(
+            app,
+            setting_bool(&previous.settings, "launchAtStartup", false),
+        ) {
+            errors.push(format!("恢复开机启动设置失败：{error}"));
+        }
+    }
+    if applied.system_proxy {
+        if let Err(error) = system_proxy::apply(
+            app,
+            setting_bool(&previous.settings, "systemProxy", false),
+            setting_u16(&previous.settings, "mixedPort", 7890),
+        ) {
+            errors.push(format!("恢复系统代理失败：{error}"));
+        }
+    }
+    if applied.core {
+        if let Err(error) = core::sync_runtime_config(app, previous).await {
+            errors.push(format!("恢复运行配置失败：{error}"));
+        }
+    }
+    if errors.is_empty() {
+        format!("{original_error}；已恢复原运行状态")
+    } else {
+        format!("{original_error}；{}", errors.join("；"))
+    }
 }
 
 #[tauri::command]
@@ -309,10 +404,12 @@ async fn refresh_runtime_connections(
 #[tauri::command]
 async fn select_proxy_node(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
     snapshot: AppSnapshot,
     group_name: String,
     node_name: String,
 ) -> Result<AppSnapshot, String> {
+    let _guard = state.0.lock().await;
     let refreshed = mihomo::select_proxy_node(snapshot, group_name, node_name).await?;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
@@ -322,9 +419,11 @@ async fn select_proxy_node(
 #[tauri::command]
 async fn close_runtime_connections(
     app: tauri::AppHandle,
-    snapshot: AppSnapshot,
+    state: tauri::State<'_, AppMutationState>,
     ids: Vec<String>,
 ) -> Result<AppSnapshot, String> {
+    let _guard = state.0.lock().await;
+    let snapshot = storage::load_snapshot(&app)?;
     let refreshed = mihomo::close_connections(snapshot, ids).await?;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
@@ -334,9 +433,11 @@ async fn close_runtime_connections(
 #[tauri::command]
 async fn refresh_proxy_providers(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
     snapshot: AppSnapshot,
     provider_names: Vec<String>,
 ) -> Result<AppSnapshot, String> {
+    let _guard = state.0.lock().await;
     let refreshed = mihomo::refresh_proxy_providers(snapshot, provider_names).await?;
     let refreshed = subscription::enrich_runtime_nodes(&app, refreshed)?;
     storage::save_snapshot(&app, &refreshed)?;
@@ -346,9 +447,11 @@ async fn refresh_proxy_providers(
 #[tauri::command]
 async fn refresh_local_subscriptions(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
     snapshot: AppSnapshot,
     subscription_ids: Vec<String>,
 ) -> Result<LocalSubscriptionRefreshResult, String> {
+    let _guard = state.0.lock().await;
     let refreshed =
         subscription::refresh_local_subscriptions(&app, snapshot, subscription_ids).await;
     storage::save_snapshot(&app, &refreshed.snapshot)?;
@@ -358,9 +461,11 @@ async fn refresh_local_subscriptions(
 #[tauri::command]
 async fn delete_local_subscription(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
     snapshot: AppSnapshot,
     subscription_id: String,
 ) -> Result<AppSnapshot, String> {
+    let _guard = state.0.lock().await;
     let mut refreshed =
         subscription::delete_local_subscription(&app, snapshot, &subscription_id).await?;
     mihomo::push_runtime_log(
@@ -381,8 +486,10 @@ async fn test_proxy_delay(settings: SettingsMap, node_name: String) -> Result<De
 #[tauri::command]
 async fn start_mihomo_core(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
     settings: SettingsMap,
 ) -> Result<core::MihomoCoreLaunchResult, String> {
+    let _guard = state.0.lock().await;
     let mut snapshot = storage::load_snapshot(&app)?;
     snapshot.settings = settings;
     let result = core::start_core(app.clone(), snapshot.clone()).await?;
@@ -407,7 +514,9 @@ fn get_tun_service_status(app: tauri::AppHandle) -> Result<tun_service::TunServi
 #[tauri::command]
 async fn install_tun_service(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
 ) -> Result<tun_service::TunServiceStatus, String> {
+    let _guard = state.0.lock().await;
     let snapshot = storage::load_snapshot(&app)?;
     let install_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || tun_service::install(&install_app))
@@ -420,7 +529,9 @@ async fn install_tun_service(
 #[tauri::command]
 async fn uninstall_tun_service(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppMutationState>,
 ) -> Result<tun_service::TunServiceStatus, String> {
+    let _guard = state.0.lock().await;
     let mut snapshot = storage::load_snapshot(&app)?;
     if setting_bool(&snapshot.settings, "tunMode", false) {
         snapshot
@@ -497,11 +608,40 @@ async fn stop_mihomo_before_exit(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+async fn refresh_due_subscriptions(app: &tauri::AppHandle) -> Result<usize, String> {
+    let snapshot = storage::load_snapshot(app)?;
+    let now = chrono::Local::now().timestamp();
+    let due_ids = snapshot
+        .subscriptions
+        .iter()
+        .filter(|item| subscription_is_due(item, now))
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    if due_ids.is_empty() {
+        return Ok(0);
+    }
+    let refreshed = subscription::refresh_local_subscriptions(app, snapshot, due_ids).await;
+    let updated = refreshed.updated;
+    storage::save_snapshot(app, &refreshed.snapshot)?;
+    Ok(updated)
+}
+
+fn subscription_is_due(subscription: &models::Subscription, now: i64) -> bool {
+    subscription.enabled
+        && subscription.auto_update
+        && subscription.subscription_type == "HTTP"
+        && subscription.update_interval > 0
+        && subscription.last_updated_at.is_none_or(|updated_at| {
+            now.saturating_sub(updated_at) >= i64::from(subscription.update_interval) * 3600
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(ConnectionDetailSnapshots::default())
         .manage(AppExitState::default())
+        .manage(AppMutationState::default())
         .setup(|app| {
             tray::setup(app.handle())?;
             let snapshot = storage::load_snapshot(app.handle()).unwrap_or_else(|error| {
@@ -533,6 +673,17 @@ pub fn run() {
                         }
                         Ok(_) => {}
                         Err(_) => {}
+                    }
+                }
+            });
+            let subscription_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let state = subscription_app.state::<AppMutationState>();
+                    let _guard = state.0.lock().await;
+                    if let Err(error) = refresh_due_subscriptions(&subscription_app).await {
+                        eprintln!("自动更新订阅失败：{error}");
                     }
                 }
             });
@@ -610,6 +761,32 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn test_subscription() -> models::Subscription {
+        models::Subscription {
+            id: "subscription".into(),
+            name: "测试订阅".into(),
+            subscription_type: "HTTP".into(),
+            url: "https://example.com/sub".into(),
+            node_count: 0,
+            last_updated: "尚未更新".into(),
+            update_interval: 12,
+            status: "正常".into(),
+            enabled: true,
+            auto_update: true,
+            proxy_update: true,
+            allow_override: false,
+            user_agent: None,
+            headers: HashMap::new(),
+            health_check: true,
+            test_url: "https://www.gstatic.com/generate_204".into(),
+            last_updated_at: None,
+            description: None,
+            used_traffic: "0 B".into(),
+            expires_at: "未知".into(),
+            tags: Vec::new(),
+        }
+    }
+
     #[test]
     fn exit_cleanup_only_starts_once_and_allows_exit_after_completion() {
         let state = AppExitState::default();
@@ -621,5 +798,38 @@ mod tests {
         state.mark_ready();
 
         assert!(state.is_ready());
+    }
+
+    #[test]
+    fn schedules_only_due_enabled_http_subscriptions() {
+        let mut subscription = test_subscription();
+        assert!(subscription_is_due(&subscription, 100_000));
+
+        subscription.last_updated_at = Some(100_000 - 11 * 3600);
+        assert!(!subscription_is_due(&subscription, 100_000));
+        subscription.last_updated_at = Some(100_000 - 12 * 3600);
+        assert!(subscription_is_due(&subscription, 100_000));
+
+        subscription.auto_update = false;
+        assert!(!subscription_is_due(&subscription, 100_000));
+    }
+
+    #[test]
+    fn preserves_newer_backend_subscription_results_during_stale_save() {
+        let mut previous = defaults::default_snapshot();
+        let mut refreshed = test_subscription();
+        refreshed.node_count = 8;
+        refreshed.last_updated = "12:00:00".into();
+        refreshed.last_updated_at = Some(200);
+        previous.subscriptions.push(refreshed);
+
+        let mut incoming = defaults::default_snapshot();
+        let mut stale = test_subscription();
+        stale.last_updated_at = Some(100);
+        incoming.subscriptions.push(stale);
+        merge_newer_subscription_runtime(&previous, &mut incoming);
+
+        assert_eq!(incoming.subscriptions[0].node_count, 8);
+        assert_eq!(incoming.subscriptions[0].last_updated_at, Some(200));
     }
 }

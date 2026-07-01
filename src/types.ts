@@ -35,6 +35,13 @@ export interface ProxyGroup {
   currentNodeId?: string;
   autoTest: boolean;
   allowManual: boolean;
+  testUrl: string;
+  interval: number;
+  tolerance: number;
+  loadBalanceStrategy: string;
+  healthCheck: boolean;
+  failureThreshold: number;
+  extra: string;
 }
 
 export interface ProxyGroupMemberOverride {
@@ -64,6 +71,11 @@ export interface Subscription {
   autoUpdate: boolean;
   proxyUpdate: boolean;
   allowOverride: boolean;
+  userAgent?: string;
+  headers: Record<string, string>;
+  healthCheck: boolean;
+  testUrl: string;
+  lastUpdatedAt?: number;
   description?: string;
   usedTraffic: string;
   expiresAt: string;

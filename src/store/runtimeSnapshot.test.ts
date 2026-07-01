@@ -16,6 +16,9 @@ const subscription = (id: string): Subscription => ({
   autoUpdate: true,
   proxyUpdate: true,
   allowOverride: false,
+  headers: {},
+  healthCheck: true,
+  testUrl: "https://www.gstatic.com/generate_204",
   usedTraffic: "0 B",
   expiresAt: "未知",
   tags: [],
@@ -43,6 +46,13 @@ const group = (id: string, origin: "local" | "managed"): ProxyGroup => ({
   groupIds: [],
   autoTest: false,
   allowManual: true,
+  testUrl: "https://www.gstatic.com/generate_204",
+  interval: 300,
+  tolerance: 50,
+  loadBalanceStrategy: "round-robin",
+  healthCheck: true,
+  failureThreshold: 3,
+  extra: "",
 });
 
 const rule = (id: string, source: "local" | "managed"): RoutingRule => ({

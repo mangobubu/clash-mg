@@ -455,10 +455,15 @@ async fn refresh_local_subscriptions(
     snapshot: AppSnapshot,
     subscription_ids: Vec<String>,
 ) -> Result<LocalSubscriptionRefreshResult, String> {
-    let _guard = state.0.lock().await;
-    let refreshed =
+    let mut refreshed =
         subscription::refresh_local_subscriptions(&app, snapshot, subscription_ids).await;
-    storage::save_snapshot(&app, &refreshed.snapshot)?;
+        
+    let _guard = state.0.lock().await;
+    let mut latest = storage::load_snapshot(&app)?;
+    merge_newer_subscription_runtime(&refreshed.snapshot, &mut latest);
+    storage::save_snapshot(&app, &latest)?;
+    
+    refreshed.snapshot = latest;
     Ok(refreshed)
 }
 
@@ -636,10 +641,9 @@ async fn refresh_due_subscriptions(
     // 阶段二（持锁）：重新加载磁盘最新快照，合并下载结果后保存
     // 使用 merge_newer_subscription_runtime 处理下载期间其他写操作造成的版本冲突
     let _guard = state.0.lock().await;
-    let latest = storage::load_snapshot(app)?;
-    let mut merged = refreshed.snapshot;
-    merge_newer_subscription_runtime(&latest, &mut merged);
-    storage::save_snapshot(app, &merged)?;
+    let mut latest = storage::load_snapshot(app)?;
+    merge_newer_subscription_runtime(&refreshed.snapshot, &mut latest);
+    storage::save_snapshot(app, &latest)?;
     Ok(updated)
 }
 

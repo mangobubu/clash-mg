@@ -8,7 +8,7 @@ import {
 import { Button, Modal, Popover, Switch, Typography, message } from "antd";
 import { getTunServiceStatus, installTunService, uninstallTunService } from "../backend/api";
 import { useAppStore } from "../store/useAppStore";
-import type { TunServiceStatus } from "../types";
+import type { AppSettings, TunServiceStatus } from "../types";
 
 const unavailableStatus: TunServiceStatus = {
   installed: false,
@@ -18,6 +18,14 @@ const unavailableStatus: TunServiceStatus = {
 
 export function isTunServiceAvailable(status: TunServiceStatus) {
   return status.installed && status.versionCompatible && !status.message;
+}
+
+export function getEffectiveTunSettings(
+  settings: AppSettings,
+  status: TunServiceStatus,
+): AppSettings {
+  if (!settings.tunMode || isTunServiceAvailable(status)) return settings;
+  return { ...settings, tunMode: false };
 }
 
 export function isTunSwitchLoading(checking: boolean, switching: boolean) {
@@ -40,8 +48,6 @@ const TunServiceContext = createContext<TunServiceContextValue | null>(null);
 export function TunServiceProvider({ children }: { children: React.ReactNode }) {
   const hydrated = useAppStore((state) => state.hydrated);
   const backendAvailable = useAppStore((state) => state.backendAvailable);
-  const tunEnabled = useAppStore((state) => Boolean(state.settings.tunMode));
-  const updateSetting = useAppStore((state) => state.updateSetting);
   const applyTunMode = useAppStore((state) => state.applyTunMode);
   const [status, setStatus] = useState<TunServiceStatus>(unavailableStatus);
   const [checking, setChecking] = useState(true);
@@ -68,11 +74,6 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
     if (!hydrated) return;
     void refresh();
   }, [hydrated, refresh]);
-
-  useEffect(() => {
-    if (checking || !tunEnabled) return;
-    if (!status.installed || !status.versionCompatible) updateSetting("tunMode", false);
-  }, [checking, status.installed, status.versionCompatible, tunEnabled, updateSetting]);
 
   const install = useCallback(async () => {
     setBusy(true);

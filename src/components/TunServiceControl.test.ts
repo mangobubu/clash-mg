@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isTunServiceAvailable, isTunSwitchLoading } from "./TunServiceControl";
+import {
+  getEffectiveTunSettings,
+  isTunServiceAvailable,
+  isTunSwitchLoading,
+} from "./TunServiceControl";
 
 describe("isTunServiceAvailable", () => {
   it("只有服务已安装、版本匹配且可连接时才允许使用 TUN", () => {
@@ -15,5 +19,32 @@ describe("isTunSwitchLoading", () => {
     expect(isTunSwitchLoading(true, false)).toBe(true);
     expect(isTunSwitchLoading(false, true)).toBe(true);
     expect(isTunSwitchLoading(false, false)).toBe(false);
+  });
+});
+
+describe("getEffectiveTunSettings", () => {
+  it("服务版本不匹配时仅关闭本次启动配置，不修改持久化设置", () => {
+    const settings = { tunMode: true, mixedPort: 7890 };
+    const effective = getEffectiveTunSettings(settings, {
+      installed: true,
+      running: true,
+      versionCompatible: false,
+      message: "系统服务版本与应用不一致",
+    });
+
+    expect(effective).toEqual({ tunMode: false, mixedPort: 7890 });
+    expect(effective).not.toBe(settings);
+    expect(settings.tunMode).toBe(true);
+  });
+
+  it("服务可用时保持原设置对象", () => {
+    const settings = { tunMode: true };
+    const effective = getEffectiveTunSettings(settings, {
+      installed: true,
+      running: true,
+      versionCompatible: true,
+    });
+
+    expect(effective).toBe(settings);
   });
 });

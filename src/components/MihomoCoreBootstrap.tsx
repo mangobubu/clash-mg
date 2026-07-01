@@ -3,7 +3,7 @@ import { ReloadOutlined, WarningOutlined } from "@ant-design/icons";
 import { Button, Flex, Modal, Typography } from "antd";
 import { startMihomoCore } from "../backend/api";
 import { useAppStore } from "../store/useAppStore";
-import { isTunServiceAvailable, useTunService } from "./TunServiceControl";
+import { getEffectiveTunSettings, useTunService } from "./TunServiceControl";
 
 export function MihomoCoreBootstrap() {
   const hydrated = useAppStore((state) => state.hydrated);
@@ -11,7 +11,6 @@ export function MihomoCoreBootstrap() {
   const settings = useAppStore((state) => state.settings);
   const refreshRuntimeData = useAppStore((state) => state.refreshRuntimeData);
   const testAutoProxyGroups = useAppStore((state) => state.testAutoProxyGroups);
-  const updateSetting = useAppStore((state) => state.updateSetting);
   const { status: tunServiceStatus, checking: checkingTunService } = useTunService();
   const initializedRef = useRef(false);
   const [open, setOpen] = useState(false);
@@ -19,18 +18,14 @@ export function MihomoCoreBootstrap() {
   const [error, setError] = useState<string | null>(null);
 
   const startCoreAndRefresh = useCallback(async () => {
-    const tunServiceAvailable = isTunServiceAvailable(tunServiceStatus);
-    const effectiveSettings = settings.tunMode && !tunServiceAvailable
-      ? { ...settings, tunMode: false }
-      : settings;
-    if (settings.tunMode && !tunServiceAvailable) updateSetting("tunMode", false);
+    const effectiveSettings = getEffectiveTunSettings(settings, tunServiceStatus);
 
     const result = await startMihomoCore(effectiveSettings);
     if (!result.controllerReady) throw new Error(result.message);
 
     await refreshRuntimeData();
     await testAutoProxyGroups();
-  }, [refreshRuntimeData, settings, testAutoProxyGroups, tunServiceStatus.installed, tunServiceStatus.message, tunServiceStatus.versionCompatible, updateSetting]);
+  }, [refreshRuntimeData, settings, testAutoProxyGroups, tunServiceStatus]);
 
   const prepareCore = useCallback(async () => {
     setBusy(true);

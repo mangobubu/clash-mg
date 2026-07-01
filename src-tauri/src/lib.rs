@@ -340,7 +340,9 @@ async fn rollback_save_effects(
     original_error: String,
 ) -> String {
     let mut errors = Vec::new();
+    let mut rollback_attempted = false;
     if applied.firewall {
+        rollback_attempted = true;
         if let Err(error) = firewall::apply(
             &previous.settings,
             setting_bool(&previous.settings, "firewall", false),
@@ -349,6 +351,7 @@ async fn rollback_save_effects(
         }
     }
     if applied.autostart {
+        rollback_attempted = true;
         if let Err(error) = autostart::apply(
             app,
             setting_bool(&previous.settings, "launchAtStartup", false),
@@ -357,6 +360,7 @@ async fn rollback_save_effects(
         }
     }
     if applied.system_proxy {
+        rollback_attempted = true;
         if let Err(error) = system_proxy::apply(
             app,
             setting_bool(&previous.settings, "systemProxy", false),
@@ -365,16 +369,26 @@ async fn rollback_save_effects(
             errors.push(format!("恢复系统代理失败：{error}"));
         }
     }
-    if applied.core {
+    let runtime_rollback_blocked = applied.core
+        && tun_service::status(app)
+            .is_ok_and(|status| service_status_blocks_runtime_rollback(&status));
+    if applied.core && !runtime_rollback_blocked {
+        rollback_attempted = true;
         if let Err(error) = core::sync_runtime_config(app, previous).await {
             errors.push(format!("恢复运行配置失败：{error}"));
         }
     }
-    if errors.is_empty() {
+    if !errors.is_empty() {
+        format!("{original_error}；{}", errors.join("；"))
+    } else if rollback_attempted {
         format!("{original_error}；已恢复原运行状态")
     } else {
-        format!("{original_error}；{}", errors.join("；"))
+        original_error
     }
+}
+
+fn service_status_blocks_runtime_rollback(status: &tun_service::TunServiceStatus) -> bool {
+    status.installed && (!status.version_compatible || status.message.is_some())
 }
 
 #[tauri::command]
@@ -457,12 +471,12 @@ async fn refresh_local_subscriptions(
 ) -> Result<LocalSubscriptionRefreshResult, String> {
     let mut refreshed =
         subscription::refresh_local_subscriptions(&app, snapshot, subscription_ids).await;
-        
+
     let _guard = state.0.lock().await;
     let mut latest = storage::load_snapshot(&app)?;
     merge_newer_subscription_runtime(&refreshed.snapshot, &mut latest);
     storage::save_snapshot(&app, &latest)?;
-    
+
     refreshed.snapshot = latest;
     Ok(refreshed)
 }
@@ -852,5 +866,26 @@ mod tests {
 
         assert_eq!(incoming.subscriptions[0].node_count, 8);
         assert_eq!(incoming.subscriptions[0].last_updated_at, Some(200));
+    }
+
+    #[test]
+    fn skips_runtime_rollback_when_installed_service_is_unavailable() {
+        let incompatible = tun_service::TunServiceStatus {
+            installed: true,
+            running: true,
+            version_compatible: false,
+            service_version: Some("旧版本".into()),
+            message: Some("系统服务版本与应用不一致".into()),
+        };
+        let available = tun_service::TunServiceStatus {
+            installed: true,
+            running: true,
+            version_compatible: true,
+            service_version: Some("当前版本".into()),
+            message: None,
+        };
+
+        assert!(service_status_blocks_runtime_rollback(&incompatible));
+        assert!(!service_status_blocks_runtime_rollback(&available));
     }
 }

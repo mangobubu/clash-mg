@@ -30,6 +30,7 @@ import { AppLogo, StatusDot } from "./Common";
 import { useRuntimeMetrics } from "./useRuntimeMetrics";
 
 const { Text } = Typography;
+const appVersion = __APP_VERSION__;
 
 const navigation = [
   { key: "/", icon: <HomeOutlined />, label: "总览" },
@@ -219,6 +220,12 @@ export function AppShell() {
             </div>
           </Tooltip>
         </div>
+        <Tooltip title={`当前版本 v${appVersion}`} placement="right">
+          <div className="sidebar-version" aria-label={`当前版本 v${appVersion}`}>
+            <span>版本</span>
+            <strong>v{appVersion}</strong>
+          </div>
+        </Tooltip>
       </aside>
 
       <header className="topbar">

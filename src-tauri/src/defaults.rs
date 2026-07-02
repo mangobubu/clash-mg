@@ -46,6 +46,8 @@ pub fn default_settings() -> SettingsMap {
         ("connectNearest".into(), json!(true)),
         ("networkStack".into(), json!("Mixed")),
         ("autoRoute".into(), json!(true)),
+        ("tunRouteMode".into(), json!("兼容模式（仅 Fake-IP）")),
+        ("tunSniffer".into(), json!(false)),
         ("strictRoute".into(), json!(false)),
         ("networkInterface".into(), json!("系统默认")),
         ("bindAddress".into(), json!("0.0.0.0")),

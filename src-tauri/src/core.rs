@@ -42,6 +42,8 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "tunMode",
     "networkStack",
     "autoRoute",
+    "tunRouteMode",
+    "tunSniffer",
     "strictRoute",
     "networkInterface",
     "processMode",

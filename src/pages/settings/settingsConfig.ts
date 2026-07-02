@@ -104,6 +104,8 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
       { title: "TUN 与路由", fields: [
         { key: "tunMode", label: "TUN 模式", control: "switch" },
         { key: "autoRoute", label: "自动路由", control: "switch" },
+        { key: "tunRouteMode", label: "TUN 路由范围", description: "兼容模式仅接管 Fake-IP 流量；全量接管会将默认路由交给 TUN。", control: "select", options: ["兼容模式（仅 Fake-IP）", "全量接管模式"] },
+        { key: "tunSniffer", label: "TUN 嗅探", description: "启用后对 TUN 流量进行域名嗅探，可能影响远控、游戏和 P2P 场景。", control: "switch" },
         { key: "ipv6", label: "IPv6", control: "switch" },
         { key: "strictRoute", label: "严格路由", control: "switch" },
         { key: "networkStack", label: "网络栈", control: "select", options: ["Mixed", "System", "gVisor"] },

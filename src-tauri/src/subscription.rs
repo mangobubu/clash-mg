@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -995,10 +996,17 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
             Value::String("tcp://any:53".into()),
         ]),
     );
-    tun.insert(
-        key("auto-route"),
-        Value::Bool(setting_bool(settings, "autoRoute", true)),
-    );
+    let auto_route = setting_bool(settings, "autoRoute", true);
+    tun.insert(key("auto-route"), Value::Bool(auto_route));
+    tun.remove(key("route-address"));
+    tun.remove(key("inet4-route-address"));
+    tun.remove(key("inet6-route-address"));
+    if auto_route && tun_uses_compat_route(settings) {
+        tun.insert(
+            key("route-address"),
+            Value::Sequence(vec![Value::String(fake_ip_route_address(settings))]),
+        );
+    }
     tun.insert(
         key("strict-route"),
         Value::Bool(setting_bool(settings, "strictRoute", false)),
@@ -1017,7 +1025,7 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
     }
     root.insert(key("tun"), Value::Mapping(tun));
 
-    if setting_bool(settings, "tunMode", false) {
+    if setting_bool(settings, "tunMode", false) && setting_bool(settings, "tunSniffer", false) {
         apply_tun_sniffer(root)?;
     }
 
@@ -1220,6 +1228,38 @@ fn map_tun_stack(value: &str) -> String {
         _ => "mixed",
     }
     .into()
+}
+
+fn tun_uses_compat_route(settings: &SettingsMap) -> bool {
+    let route_mode = setting_string(settings, "tunRouteMode", "compat").to_ascii_lowercase();
+    !(route_mode.contains("full") || route_mode.contains("全量") || route_mode.contains("全局"))
+}
+
+fn fake_ip_route_address(settings: &SettingsMap) -> String {
+    normalize_ipv4_cidr(&setting_string(settings, "fakeIpRange", "198.18.0.1/16"))
+}
+
+fn normalize_ipv4_cidr(value: &str) -> String {
+    let value = value.trim();
+    let Some((address, prefix)) = value.split_once('/') else {
+        return value.to_string();
+    };
+    let Ok(prefix) = prefix.parse::<u32>() else {
+        return value.to_string();
+    };
+    if prefix > 32 {
+        return value.to_string();
+    }
+    let Ok(address) = address.parse::<Ipv4Addr>() else {
+        return value.to_string();
+    };
+
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    format!("{}/{}", Ipv4Addr::from(u32::from(address) & mask), prefix)
 }
 
 fn map_enhanced_mode(value: &str) -> String {
@@ -2677,33 +2717,20 @@ mod tests {
             tun.get(key("strict-route")).and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            tun.get(key("route-address"))
+                .and_then(Value::as_sequence)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            Some("198.18.0.0/16")
+        );
         assert!(root
             .get(key("dns"))
             .and_then(Value::as_mapping)
             .and_then(|dns| dns.get(key("enable")))
             .and_then(Value::as_bool)
             .unwrap_or(false));
-        let sniffer = root
-            .get(key("sniffer"))
-            .and_then(Value::as_mapping)
-            .expect("TUN 模式应启用域名嗅探");
-        assert_eq!(
-            sniffer.get(key("enable")).and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            sniffer
-                .get(key("override-destination"))
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        let protocols = sniffer
-            .get(key("sniff"))
-            .and_then(Value::as_mapping)
-            .expect("应生成嗅探协议配置");
-        assert!(protocols.contains_key(key("HTTP")));
-        assert!(protocols.contains_key(key("TLS")));
-        assert!(protocols.contains_key(key("QUIC")));
+        assert!(root.get(key("sniffer")).is_none());
         assert_eq!(
             rules.first().and_then(Value::as_str),
             Some("MATCH,自动选择")
@@ -2711,9 +2738,34 @@ mod tests {
     }
 
     #[test]
+    fn keeps_full_tun_route_when_route_mode_requests_global_capture() {
+        let mut settings = crate::defaults::default_settings();
+        settings.insert("tunMode".into(), serde_json::json!(true));
+        settings.insert("tunRouteMode".into(), serde_json::json!("全量接管模式"));
+        let mut root = serde_yaml::from_str::<Value>(
+            "tun:\n  route-address:\n    - 198.18.0.0/16\n  inet4-route-address:\n    - 198.18.0.0/16\n",
+        )
+        .expect("测试配置应可解析")
+        .as_mapping()
+        .cloned()
+        .expect("测试配置根节点应为对象");
+
+        apply_runtime_settings(&mut root, &settings).expect("应生成全量 TUN 配置");
+
+        let tun = root
+            .get(key("tun"))
+            .and_then(Value::as_mapping)
+            .expect("应包含 TUN 配置");
+        assert!(tun.get(key("route-address")).is_none());
+        assert!(tun.get(key("inet4-route-address")).is_none());
+        assert!(tun.get(key("inet6-route-address")).is_none());
+    }
+
+    #[test]
     fn preserves_custom_sniffer_protocols_while_enabling_tun_fallbacks() {
         let mut settings = crate::defaults::default_settings();
         settings.insert("tunMode".into(), serde_json::json!(true));
+        settings.insert("tunSniffer".into(), serde_json::json!(true));
         let mut root = serde_yaml::from_str::<Value>(
             "sniffer:\n  enable: false\n  skip-domain:\n    - private.example\n  sniff:\n    TLS:\n      ports: [9443]\n",
         )

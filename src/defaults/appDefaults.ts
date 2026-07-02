@@ -36,6 +36,8 @@ export const defaultSettings: AppSettings = {
   connectNearest: true,
   networkStack: "Mixed",
   autoRoute: true,
+  tunRouteMode: "兼容模式（仅 Fake-IP）",
+  tunSniffer: false,
   strictRoute: false,
   networkInterface: "系统默认",
   bindAddress: "0.0.0.0",

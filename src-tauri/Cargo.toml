@@ -1,6 +1,6 @@
 [package]
 name = "clash-mg"
-version = "0.0.3"
+version = "0.0.4"
 description = "A modern cross-platform Mihomo desktop client"
 authors = ["clash-mg contributors"]
 edition = "2021"

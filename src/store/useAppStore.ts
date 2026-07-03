@@ -13,6 +13,7 @@ import {
 } from "../backend/api";
 import { createEmptyAppData, defaultSettings } from "../defaults/appDefaults";
 import type { AppData, AppState, DelayResult, OverrideItem, Subscription, SubscriptionRefreshResult } from "../types";
+import { appendTrafficHistorySample } from "../utils/trafficHistory";
 import { mergeRuntimeSnapshot } from "./runtimeSnapshot";
 
 const currentTime = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -273,18 +274,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const result = await refreshRuntimeConnections(toAppData(get()));
       if (requestRevision !== connectionRefreshRevision) return;
-      set((current) => ({
-        connections: result.connections.filter((connection) => !closingConnectionIds.has(connection.id)),
-        runtime: {
-          ...current.runtime,
-          controllerConnected: true,
-          uploadTotal: result.uploadTotal,
-          downloadTotal: result.downloadTotal,
-          lastSync: currentTime(),
-          error: undefined,
-        },
-        connected: true,
-      }));
+      set((current) => {
+        const connections = result.connections.filter((connection) => !closingConnectionIds.has(connection.id));
+
+        return {
+          connections,
+          trafficHistory: appendTrafficHistorySample(current.trafficHistory, {
+            connections,
+            groups: current.groups,
+            downloadTotal: result.downloadTotal,
+            uploadTotal: result.uploadTotal,
+          }),
+          runtime: {
+            ...current.runtime,
+            controllerConnected: true,
+            uploadTotal: result.uploadTotal,
+            downloadTotal: result.downloadTotal,
+            lastSync: currentTime(),
+            error: undefined,
+          },
+          connected: true,
+        };
+      });
     } catch (error) {
       console.error("连接列表自动刷新失败", error);
       set((state) => ({

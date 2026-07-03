@@ -21,6 +21,7 @@ const proxyGroupLineColors = ["#9b5de5", "#f15bb5", "#f59e0b", "#14b8a6", "#6474
 const megabyteInBytes = 1024 ** 2;
 const downloadSeriesKey = "download";
 const uploadSeriesKey = "upload";
+const dashboardRefreshInterval = 5_000;
 
 function getProxyGroupTrafficKey(groupId: string) {
   return `proxyGroupTraffic_${groupId}`;
@@ -79,11 +80,18 @@ export function DashboardPage() {
     runtime,
     settings,
     trafficHistory,
+    refreshConnections,
     refreshRuntimeData,
     testAutoProxyGroups,
     updateSetting,
   } = useAppStore();
   const { status: tunServiceStatus } = useTunService();
+  useEffect(() => {
+    void refreshConnections();
+    const timer = window.setInterval(() => void refreshConnections(), dashboardRefreshInterval);
+    return () => window.clearInterval(timer);
+  }, [refreshConnections]);
+
   const realtimeTraffic = {
     download: { total: runtime.downloadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
     upload: { total: runtime.uploadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
@@ -181,7 +189,7 @@ export function DashboardPage() {
 
           <Panel
             className="traffic-history"
-            title={<Flex align="baseline" gap={12}><Title level={3}>连接统计</Title><Text type="secondary">（{range === "24h" ? "今日 0–24 时" : range === "7d" ? "最近 7 天" : "最近 30 天"}）</Text></Flex>}
+            title={<Flex align="baseline" gap={12}><Title level={3}>流量统计</Title><Text type="secondary">（{range === "24h" ? "今日 0–24 时" : range === "7d" ? "最近 7 天" : "最近 30 天"}）</Text></Flex>}
           >
             <div className="traffic-history-layout">
               <div className="traffic-chart-pane">

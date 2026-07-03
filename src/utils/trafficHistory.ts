@@ -1,4 +1,4 @@
-import type { TrafficPoint } from "../types";
+import type { Connection, ProxyGroup, TrafficPoint } from "../types";
 
 export type TrafficRange = "24h" | "7d" | "30d";
 
@@ -15,6 +15,22 @@ export interface TrafficChartData {
 }
 
 const metadataKeys = new Set(["time", "sampledAt", "bucket"]);
+const trafficHistoryBucketMs = 5 * 60 * 1000;
+const trafficHistoryRetentionMs = 30 * 24 * 60 * 60 * 1000;
+const trafficSizeUnits: Record<string, number> = {
+  B: 1 / 1024 / 1024,
+  KB: 1 / 1024,
+  MB: 1,
+  GB: 1024,
+  TB: 1024 * 1024,
+};
+
+interface TrafficHistorySampleInput {
+  connections: Connection[];
+  groups: ProxyGroup[];
+  downloadTotal: string;
+  uploadTotal: string;
+}
 
 export function buildTrafficChartData(
   history: TrafficPoint[],
@@ -77,6 +93,52 @@ export function buildTrafficChartData(
   };
 }
 
+export function appendTrafficHistorySample(
+  history: TrafficPoint[],
+  { connections, groups, downloadTotal, uploadTotal }: TrafficHistorySampleInput,
+  now = Date.now(),
+): TrafficPoint[] {
+  const point: TrafficPoint = {
+    time: timeLabel(now),
+    sampledAt: now,
+    download: parseTrafficSizeToMegabytes(downloadTotal),
+    upload: parseTrafficSizeToMegabytes(uploadTotal),
+  };
+
+  for (const group of groups.filter((item) => item.origin === "managed")) {
+    point[`proxyGroupTraffic_${group.id}`] = connections
+      .filter((connection) => connection.policy === group.name)
+      .length;
+  }
+
+  const retained = history.filter((item) =>
+    typeof item.sampledAt !== "number"
+    || item.sampledAt === 0
+    || item.sampledAt >= now - trafficHistoryRetentionMs);
+  const last = retained.at(-1);
+
+  if (
+    last
+    && typeof last.sampledAt === "number"
+    && last.sampledAt > 0
+    && Math.floor(last.sampledAt / trafficHistoryBucketMs) === Math.floor(now / trafficHistoryBucketMs)
+  ) {
+    return [...retained.slice(0, -1), point];
+  }
+
+  return [...retained, point];
+}
+
+export function parseTrafficSizeToMegabytes(value: string): number {
+  const match = /^([\d.]+)\s*(B|KB|MB|GB|TB)$/i.exec(value.trim());
+  if (!match) return 0;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return 0;
+
+  return amount * trafficSizeUnits[match[2].toUpperCase()];
+}
+
 function collectValueKeys(history: TrafficPoint[], seriesKeys: string[]) {
   const keys = new Set(["download", "upload", ...seriesKeys]);
   for (const point of history) {
@@ -134,6 +196,11 @@ function shortDate(timestamp: number) {
 function fullDate(timestamp: number) {
   const date = new Date(timestamp);
   return `${date.getFullYear()}-${shortDate(timestamp)}`;
+}
+
+function timeLabel(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function pad(value: number) {

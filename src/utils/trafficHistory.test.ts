@@ -1,9 +1,55 @@
 import { describe, expect, it } from "vitest";
-import type { TrafficPoint } from "../types";
-import { buildTrafficChartData } from "./trafficHistory";
+import type { Connection, ProxyGroup, TrafficPoint } from "../types";
+import { appendTrafficHistorySample, buildTrafficChartData, parseTrafficSizeToMegabytes } from "./trafficHistory";
 
 function point(sampledAt: number, download: number, upload = 0): TrafficPoint {
   return { time: "", sampledAt, download, upload };
+}
+
+function connection(policy: string): Connection {
+  return {
+    id: `connection-${policy}`,
+    app: "浏览器",
+    process: "browser",
+    processPath: "",
+    icon: "",
+    target: "example.com",
+    ip: "127.0.0.1",
+    protocol: "TCP",
+    uploadBytes: 0,
+    downloadBytes: 0,
+    upload: "0 B",
+    download: "0 B",
+    duration: "实时",
+    rule: "MATCH",
+    policy,
+    node: policy,
+    entryNode: "",
+    chain: [policy],
+    status: "活跃",
+  };
+}
+
+function group(id: string, name: string): ProxyGroup {
+  return {
+    id,
+    name,
+    type: "Selector",
+    origin: "managed",
+    icon: "",
+    description: "",
+    nodeIds: [],
+    groupIds: [],
+    autoTest: false,
+    allowManual: true,
+    testUrl: "",
+    interval: 300,
+    tolerance: 50,
+    loadBalanceStrategy: "round-robin",
+    healthCheck: true,
+    failureThreshold: 3,
+    extra: "",
+  };
 }
 
 describe("buildTrafficChartData", () => {
@@ -48,5 +94,35 @@ describe("buildTrafficChartData", () => {
     const chart = buildTrafficChartData([legacy], "24h", [], now);
 
     expect(chart.data[9]).toMatchObject({ download: 5, upload: 2 });
+  });
+
+  it("连接刷新采样按 5 分钟桶替换最新值并记录代理组连接数", () => {
+    const first = new Date(2026, 5, 28, 10, 1).getTime();
+    const second = new Date(2026, 5, 28, 10, 4).getTime();
+    const history = appendTrafficHistorySample([], {
+      connections: [connection("节点 A")],
+      groups: [group("a", "节点 A")],
+      downloadTotal: "1 MB",
+      uploadTotal: "512 KB",
+    }, first);
+
+    const next = appendTrafficHistorySample(history, {
+      connections: [connection("节点 A"), connection("节点 A")],
+      groups: [group("a", "节点 A")],
+      downloadTotal: "2 MB",
+      uploadTotal: "1 MB",
+    }, second);
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      download: 2,
+      upload: 1,
+      proxyGroupTraffic_a: 2,
+    });
+  });
+
+  it("可将格式化流量转换为 MB 数值", () => {
+    expect(parseTrafficSizeToMegabytes("512 KB")).toBe(0.5);
+    expect(parseTrafficSizeToMegabytes("1.5 GB")).toBe(1536);
   });
 });

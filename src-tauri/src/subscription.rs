@@ -507,6 +507,7 @@ pub(crate) fn build_effective_config(
     apply_node_dialer_overrides(&mut proxies, snapshot);
     apply_local_rules(&mut rules, snapshot);
     apply_rule_overrides(&mut rules, snapshot)?;
+    apply_bypass_rules(&mut rules, snapshot);
     apply_domain_overrides(root_mapping, &mut rules, snapshot)?;
     apply_default_route(&mut rules, &groups, snapshot);
     root_mapping.insert(key("proxies"), Value::Sequence(proxies));
@@ -629,6 +630,7 @@ fn apply_local_proxies(proxies: &mut Vec<Value>, snapshot: &AppSnapshot) -> Resu
         .map(ToString::to_string)
         .collect::<HashSet<_>>();
 
+    let udp_enabled = setting_bool(&snapshot.settings, "udpForward", true);
     for node in snapshot.nodes.iter().filter(|node| node.origin == "local") {
         if !existing_names.insert(node.name.clone()) {
             return Err(format!("本地节点“{}”与订阅节点重名", node.name));
@@ -643,7 +645,7 @@ fn apply_local_proxies(proxies: &mut Vec<Value>, snapshot: &AppSnapshot) -> Resu
         proxy.insert(key("name"), Value::String(node.name.clone()));
         proxy.insert(key("server"), Value::String(node.address.clone()));
         proxy.insert(key("port"), Value::Number(node.port.into()));
-        proxy.insert(key("udp"), Value::Bool(true));
+        proxy.insert(key("udp"), Value::Bool(udp_enabled));
         match node.protocol.to_ascii_lowercase().as_str() {
             "shadowsocks" | "ss" => {
                 proxy.insert(key("type"), Value::String("ss".into()));
@@ -882,6 +884,63 @@ fn apply_rule_overrides(rules: &mut Vec<Value>, snapshot: &AppSnapshot) -> Resul
     Ok(())
 }
 
+fn apply_bypass_rules(rules: &mut Vec<Value>, snapshot: &AppSnapshot) {
+    let mut bypass_rules = Vec::new();
+    let settings = &snapshot.settings;
+
+    if setting_bool(settings, "bypassLan", true) {
+        let mut cidrs = vec![
+            "10.0.0.0/8".to_string(),
+            "172.16.0.0/12".to_string(),
+            "192.168.0.0/16".to_string(),
+            "127.0.0.0/8".to_string(),
+        ];
+        cidrs.extend(split_setting_list(&setting_string(
+            settings,
+            "cidrWhitelist",
+            "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16",
+        )));
+        cidrs.sort();
+        cidrs.dedup();
+        bypass_rules.extend(
+            cidrs
+                .into_iter()
+                .map(|cidr| Value::String(format!("IP-CIDR,{cidr},DIRECT,no-resolve"))),
+        );
+
+        bypass_rules.extend(
+            split_setting_list(&setting_string(settings, "domainWhitelist", "*.lan, localhost, *.local"))
+                .into_iter()
+                .filter_map(|domain| bypass_domain_rule(&domain))
+                .map(Value::String),
+        );
+    }
+
+    if setting_bool(settings, "bypassChina", true) || setting_bool(settings, "bypassMainland", true)
+    {
+        bypass_rules.push(Value::String("GEOSITE,cn,DIRECT".into()));
+        bypass_rules.push(Value::String("GEOIP,CN,DIRECT,no-resolve".into()));
+    }
+
+    if bypass_rules.is_empty() {
+        return;
+    }
+    merge_rules(&mut bypass_rules, std::mem::take(rules));
+    *rules = bypass_rules;
+}
+
+fn bypass_domain_rule(value: &str) -> Option<String> {
+    let domain = value.trim().trim_start_matches("*.");
+    if domain.is_empty() {
+        return None;
+    }
+    if domain.eq_ignore_ascii_case("localhost") {
+        Some(format!("DOMAIN,{domain},DIRECT"))
+    } else {
+        Some(format!("DOMAIN-SUFFIX,{domain},DIRECT"))
+    }
+}
+
 fn apply_domain_overrides(
     root: &mut Mapping,
     rules: &mut Vec<Value>,
@@ -1071,28 +1130,91 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
         key("default-nameserver"),
         setting_string_sequence(settings, "defaultDns", &["223.5.5.5", "119.29.29.29"]),
     );
+    let dns_policy = setting_string(settings, "dnsPolicy", "优先使用代理 DNS");
+    let mut nameservers = setting_string_values(
+        settings,
+        "proxyDns",
+        &["tls://1.1.1.1", "https://dns.google/dns-query"],
+    );
+    let direct_nameservers =
+        setting_string_values(settings, "directDns", &["223.5.5.5", "119.29.29.29"]);
+    if dns_policy == "并发查询" {
+        append_missing_values(&mut nameservers, direct_nameservers.clone());
+    }
     dns.insert(
         key("nameserver"),
-        setting_string_sequence(
-            settings,
-            "proxyDns",
-            &["tls://1.1.1.1", "https://dns.google/dns-query"],
-        ),
+        Value::Sequence(nameservers),
+    );
+    dns.insert(
+        key("direct-nameserver"),
+        Value::Sequence(direct_nameservers),
+    );
+    dns.insert(
+        key("respect-rules"),
+        Value::Bool(setting_bool(settings, "followRules", true) || dns_policy == "遵循规则"),
     );
     dns.insert(
         key("fallback"),
         setting_string_sequence(settings, "fallbackDns", &["1.0.0.1", "8.8.8.8"]),
     );
+    let mut fallback_filter = Mapping::new();
+    fallback_filter.insert(
+        key("geoip"),
+        Value::Bool(setting_bool(settings, "geoIpFilter", true)),
+    );
+    if setting_bool(settings, "geoIpFilter", true) {
+        fallback_filter.insert(key("geoip-code"), Value::String("CN".into()));
+    }
+    let cidr_whitelist = split_setting_list(&setting_string(
+        settings,
+        "cidrWhitelist",
+        "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16",
+    ));
+    if !cidr_whitelist.is_empty() {
+        fallback_filter.insert(
+            key("ipcidr"),
+            Value::Sequence(cidr_whitelist.into_iter().map(Value::String).collect()),
+        );
+    }
+    if setting_bool(settings, "geoSiteFilter", true)
+        || setting_bool(settings, "proxyOnlyFallback", false)
+    {
+        fallback_filter.insert(
+            key("geosite"),
+            Value::Sequence(vec![Value::String("geolocation-!cn".into())]),
+        );
+    }
+    if !fallback_filter.is_empty() {
+        dns.insert(key("fallback-filter"), Value::Mapping(fallback_filter));
+    }
+    if setting_bool(settings, "ecs", false) {
+        dns.insert(key("edns-client-subnet"), Value::String("0.0.0.0/0".into()));
+    } else {
+        dns.remove(key("edns-client-subnet"));
+    }
+    if setting_bool(settings, "dnsCache", true) {
+        dns.insert(key("cache-algorithm"), Value::String("arc".into()));
+    } else {
+        dns.remove(key("cache-algorithm"));
+    }
+    if let Some(policy) = parse_nameserver_policy(&setting_string(settings, "nameServerPolicy", ""))? {
+        dns.insert(key("nameserver-policy"), Value::Mapping(policy));
+    } else {
+        dns.remove(key("nameserver-policy"));
+    }
+    let mut fake_ip_filter = setting_string(settings, "fakeIpFilter", "*.lan\nlocalhost\nstun.*.*")
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    append_missing_strings(
+        &mut fake_ip_filter,
+        split_setting_list(&setting_string(settings, "domainWhitelist", "*.lan, localhost, *.local")),
+    );
     dns.insert(
         key("fake-ip-filter"),
-        Value::Sequence(
-            setting_string(settings, "fakeIpFilter", "*.lan\nlocalhost\nstun.*.*")
-                .lines()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| Value::String(value.to_string()))
-                .collect(),
-        ),
+        Value::Sequence(fake_ip_filter.into_iter().map(Value::String).collect()),
     );
     root.insert(key("dns"), Value::Mapping(dns));
     Ok(())
@@ -1201,7 +1323,11 @@ fn setting_string(settings: &SettingsMap, name: &str, fallback: &str) -> String 
 }
 
 fn setting_string_sequence(settings: &SettingsMap, name: &str, fallback: &[&str]) -> Value {
-    let values = settings
+    Value::Sequence(setting_string_values(settings, name, fallback))
+}
+
+fn setting_string_values(settings: &SettingsMap, name: &str, fallback: &[&str]) -> Vec<Value> {
+    settings
         .get(name)
         .and_then(|value| value.as_array())
         .map(|values| {
@@ -1217,8 +1343,51 @@ fn setting_string_sequence(settings: &SettingsMap, name: &str, fallback: &[&str]
                 .iter()
                 .map(|value| Value::String((*value).to_string()))
                 .collect()
-        });
-    Value::Sequence(values)
+        })
+}
+
+fn split_setting_list(value: &str) -> Vec<String> {
+    value
+        .split(|character| character == ',' || character == '\n')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn append_missing_values(target: &mut Vec<Value>, incoming: Vec<Value>) {
+    for value in incoming {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
+fn append_missing_strings(target: &mut Vec<String>, incoming: Vec<String>) {
+    for value in incoming {
+        if !target.iter().any(|current| current == &value) {
+            target.push(value);
+        }
+    }
+}
+
+fn parse_nameserver_policy(raw: &str) -> Result<Option<Mapping>, String> {
+    let mut policy = Mapping::new();
+    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Some((matcher, value)) = line.split_once(',') else {
+            return Err(format!("nameserver-policy 条目“{line}”必须使用 匹配器, 值 格式"));
+        };
+        let matcher = matcher.trim();
+        let value = value.trim();
+        if matcher.is_empty() || value.is_empty() {
+            return Err("nameserver-policy 的匹配器和值均不能为空".into());
+        }
+        let parsed = serde_yaml::from_str::<Value>(value)
+            .unwrap_or_else(|_| Value::String(value.to_string()));
+        policy.insert(key(matcher), parsed);
+    }
+
+    Ok((!policy.is_empty()).then_some(policy))
 }
 
 fn map_tun_stack(value: &str) -> String {

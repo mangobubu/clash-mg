@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Stdio,
+    time::{Duration, SystemTime},
 };
 
 use chrono::{DateTime, Local};
@@ -19,6 +20,8 @@ pub struct CoreLogOptions {
     pub path: PathBuf,
     pub rotate: bool,
     pub max_bytes: u64,
+    pub clear_old: bool,
+    pub retention_days: u64,
 }
 
 pub fn options_from_settings(data_dir: &Path, settings: &SettingsMap) -> CoreLogOptions {
@@ -31,6 +34,8 @@ pub fn options_from_settings(data_dir: &Path, settings: &SettingsMap) -> CoreLog
             &setting_string(settings, "maxLogSize", "10 MB"),
             DEFAULT_MAX_LOG_BYTES,
         ),
+        clear_old: setting_bool(settings, "clearOldLogs", false),
+        retention_days: setting_u64(settings, "retentionDays", 7).max(1),
     }
 }
 
@@ -42,6 +47,7 @@ pub fn open_log_stdio(options: &CoreLogOptions) -> Result<(Stdio, Stdio), String
     if let Some(parent) = options.path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建 Mihomo 日志目录失败：{error}"))?;
     }
+    cleanup_old_logs(options)?;
     rotate_log_if_needed(options)?;
 
     let output = OpenOptions::new()
@@ -106,6 +112,44 @@ fn rotate_log_if_needed(options: &CoreLogOptions) -> Result<(), String> {
             .map_err(|error| format!("删除旧 Mihomo 轮转日志失败：{error}"))?;
     }
     fs::rename(&options.path, &rotated).map_err(|error| format!("轮转 Mihomo 日志失败：{error}"))
+}
+
+fn cleanup_old_logs(options: &CoreLogOptions) -> Result<(), String> {
+    if !options.clear_old {
+        return Ok(());
+    }
+    let Some(directory) = options.path.parent() else {
+        return Ok(());
+    };
+    let Some(file_name) = options.path.file_name().and_then(|value| value.to_str()) else {
+        return Ok(());
+    };
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(options.retention_days.saturating_mul(24 * 60 * 60)))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    for entry in fs::read_dir(directory).map_err(|error| format!("扫描旧 Mihomo 日志失败：{error}"))? {
+        let entry = entry.map_err(|error| format!("读取旧 Mihomo 日志条目失败：{error}"))?;
+        let path = entry.path();
+        if path == options.path || !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(file_name) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        if modified < cutoff {
+            fs::remove_file(&path).map_err(|error| {
+                format!("删除旧 Mihomo 日志“{}”失败：{error}", path.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn rotated_log_path(path: &Path) -> PathBuf {
@@ -223,6 +267,13 @@ fn setting_bool(settings: &SettingsMap, key: &str, fallback: bool) -> bool {
         .unwrap_or(fallback)
 }
 
+fn setting_u64(settings: &SettingsMap, key: &str, fallback: u64) -> u64 {
+    settings
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(fallback)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +330,8 @@ mod tests {
             path: path.clone(),
             rotate: true,
             max_bytes: 4,
+            clear_old: false,
+            retention_days: 7,
         };
 
         let _ = open_log_stdio(&options).expect("应打开轮转后的日志");

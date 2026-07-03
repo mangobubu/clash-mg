@@ -36,6 +36,30 @@ let persistenceChain: Promise<void> = Promise.resolve();
 const closingConnectionIds = new Set<string>();
 const isStandaloneAppWindow = () => /^#\/(?:connections-window|connection-detail\/)/.test(window.location.hash);
 
+const themeSettingByMode = {
+  light: "浅色",
+  dark: "深色",
+  system: "跟随系统",
+} as const;
+
+const themeModeBySetting = {
+  浅色: "light",
+  深色: "dark",
+  跟随系统: "system",
+} as const;
+
+const dnsStrategySettings = {
+  "使用内核 (Fake-IP)": { dnsEnabled: true, enhancedMode: "Fake-IP" },
+  "使用系统 DNS": { dnsEnabled: false, enhancedMode: "关闭" },
+  "Redir-Host": { dnsEnabled: true, enhancedMode: "Redir-Host" },
+} as const;
+
+const dnsStrategyByEnhancedMode = {
+  "Fake-IP": "使用内核 (Fake-IP)",
+  "Redir-Host": "Redir-Host",
+  "关闭": "使用系统 DNS",
+} as const;
+
 const isRuntimeProviderRecord = (subscription: Subscription) =>
   subscription.description === "来自 Mihomo Proxy Provider" && subscription.tags.includes("Provider");
 
@@ -276,7 +300,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   setThemeMode: (themeMode) => {
-    set({ themeMode });
+    set((state) => ({
+      themeMode,
+      settings: {
+        ...state.settings,
+        uiTheme: themeSettingByMode[themeMode],
+      },
+    }));
     queuePersist();
   },
   setAccent: (accent) => {
@@ -284,7 +314,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     queuePersist();
   },
   setSidebarCollapsed: (sidebarCollapsed) => {
-    set({ sidebarCollapsed });
+    set((state) => ({
+      sidebarCollapsed,
+      settings: {
+        ...state.settings,
+        navCollapsed: sidebarCollapsed,
+      },
+    }));
     queuePersist();
   },
   setConnected: (connected) => {
@@ -612,7 +648,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
         [key]: value,
         ...(key === "proxyMode" ? { coreMode: value } : {}),
         ...(key === "coreMode" ? { proxyMode: value } : {}),
+        ...(key === "minimizeOnClose" ? { minimizeToTray: value } : {}),
+        ...(key === "minimizeToTray" ? { minimizeOnClose: value } : {}),
+        ...(key === "showTrayIcon" && value === false ? { minimizeOnClose: false, minimizeToTray: false, silentLaunch: false } : {}),
+        ...(key === "bypassChina" ? { bypassMainland: value } : {}),
+        ...(key === "bypassMainland" ? { bypassChina: value } : {}),
+        ...(key === "uiTheme" && typeof value === "string" && value in themeModeBySetting ? { uiTheme: value } : {}),
+        ...(key === "dnsStrategy" && typeof value === "string" && value in dnsStrategySettings ? dnsStrategySettings[value as keyof typeof dnsStrategySettings] : {}),
+        ...(key === "enhancedMode" && typeof value === "string" && value in dnsStrategyByEnhancedMode ? { dnsStrategy: dnsStrategyByEnhancedMode[value as keyof typeof dnsStrategyByEnhancedMode], dnsEnabled: value !== "关闭" } : {}),
       },
+      ...(key === "uiTheme" && typeof value === "string" && value in themeModeBySetting ? { themeMode: themeModeBySetting[value as keyof typeof themeModeBySetting] } : {}),
       ...(key === "navCollapsed" ? { sidebarCollapsed: Boolean(value) } : {}),
     }));
     queuePersist();

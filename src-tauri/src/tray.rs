@@ -80,7 +80,12 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn minimize_on_close_enabled(settings: &SettingsMap) -> bool {
-    settings
+    let tray_visible = settings
+        .get("showTrayIcon")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    tray_visible
+        && settings
         .get("minimizeOnClose")
         .and_then(|value| value.as_bool())
         .unwrap_or(true)

@@ -24,7 +24,7 @@ export function MihomoCoreBootstrap() {
     if (!result.controllerReady) throw new Error(result.message);
 
     await refreshRuntimeData();
-    await testAutoProxyGroups();
+    if (settings.connectNearest) await testAutoProxyGroups();
   }, [refreshRuntimeData, settings, testAutoProxyGroups, tunServiceStatus]);
 
   const prepareCore = useCallback(async () => {
@@ -44,9 +44,10 @@ export function MihomoCoreBootstrap() {
 
   useEffect(() => {
     if (!hydrated || !backendAvailable || checkingTunService || initializedRef.current) return;
+    if (settings.coreStartTiming === "手动启动") return;
     initializedRef.current = true;
     void prepareCore();
-  }, [backendAvailable, checkingTunService, hydrated, prepareCore]);
+  }, [backendAvailable, checkingTunService, hydrated, prepareCore, settings.coreStartTiming]);
 
   return (
     <Modal

@@ -38,6 +38,7 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "controllerPort",
     "uiSecret",
     "ipv6",
+    "udpForward",
     "unifiedDelay",
     "tunMode",
     "networkStack",
@@ -46,7 +47,12 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "tunSniffer",
     "strictRoute",
     "networkInterface",
+    "overrideSystemDns",
     "processMode",
+    "bypassLan",
+    "bypassChina",
+    "bypassMainland",
+    "dnsStrategy",
     "dnsEnabled",
     "dnsIpv6",
     "dnsListen",
@@ -54,9 +60,20 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "useHosts",
     "defaultDns",
     "proxyDns",
+    "directDns",
+    "dnsPolicy",
     "fallbackDns",
+    "geoIpFilter",
+    "geoSiteFilter",
+    "cidrWhitelist",
+    "domainWhitelist",
+    "proxyOnlyFallback",
     "fakeIpRange",
     "fakeIpFilter",
+    "dnsCache",
+    "ecs",
+    "followRules",
+    "nameServerPolicy",
     "configOverride",
 ];
 
@@ -878,7 +895,7 @@ pub(crate) fn generated_config_content(settings: &SettingsMap) -> String {
         setting_bool(settings, "allowLan", false),
         yaml_string(&setting_string(settings, "bindAddress", "0.0.0.0")),
         yaml_string(&map_mode(&proxy_mode)),
-        yaml_string(&map_log_level(&setting_string(settings, "logLevel", "信息 (Info)"))),
+        yaml_string(&map_log_level(&setting_string(settings, "logLevel", "Info"))),
         yaml_string(&controller_address(settings)),
         yaml_string(&setting_string(settings, "uiSecret", "")),
         setting_bool(settings, "ipv6", false),
@@ -905,6 +922,9 @@ pub(crate) fn core_executable_path(_app: &AppHandle) -> Result<PathBuf, String> 
 }
 
 pub(crate) fn merge_core_failure_logs(app: &AppHandle, snapshot: &mut AppSnapshot) {
+    if setting_bool(&snapshot.settings, "silentCoreLog", false) {
+        return;
+    }
     let Ok(app_data_dir) = app.path().app_data_dir() else {
         return;
     };

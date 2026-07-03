@@ -4,7 +4,7 @@ import { App as AntApp, ConfigProvider, Spin, theme } from "antd";
 import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
 import zhTW from "antd/locale/zh_TW";
-import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { AppUpdateChecker } from "./components/AppUpdateChecker";
 import { MihomoCoreBootstrap } from "./components/MihomoCoreBootstrap";
@@ -25,6 +25,15 @@ const SettingsPage = lazy(() => import("./pages/settings/SettingsPage").then((mo
 
 const editableTargetSelector = "input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']";
 const nonTextInputTypes = new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]);
+const defaultPagePaths: Record<string, string> = {
+  代理: "/proxies",
+  节点: "/nodes",
+  订阅: "/subscriptions",
+  规则: "/rules",
+  连接: "/connections",
+  日志: "/logs",
+  设置: "/settings/general",
+};
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
@@ -53,7 +62,7 @@ function ConnectionsRoute() {
 
       try {
         await invoke("open_connections_window");
-        navigate("/", { replace: true });
+        navigate("/", { replace: true, state: { skipDefaultPage: true } });
       } catch (error) {
         console.error(error);
         if (mounted) setShouldRenderInMainWindow(true);
@@ -70,6 +79,16 @@ function ConnectionsRoute() {
   if (!shouldRenderInMainWindow) return <div className="route-loading"><Spin size="large" /></div>;
 
   return <ConnectionsPage />;
+}
+
+function DefaultRoute() {
+  const location = useLocation();
+  const defaultPage = useAppStore((state) => state.settings.defaultPage);
+  const skipDefaultPage = Boolean((location.state as { skipDefaultPage?: boolean } | null)?.skipDefaultPage);
+  const target = defaultPagePaths[String(defaultPage ?? "")];
+
+  if (skipDefaultPage || !target) return <DashboardPage />;
+  return <Navigate to={target} replace state={{ fromDefaultPage: true }} />;
 }
 
 export default function App() {
@@ -94,11 +113,31 @@ export default function App() {
   const isDark = themeMode === "dark" || (themeMode === "system" && systemDark);
   const appLocale = normalizeLocale(settings.language);
   useEffect(() => {
+    const root = document.documentElement;
     document.documentElement.dataset.theme = isDark ? "dark" : "light";
-    document.documentElement.lang = appLocale;
-    document.documentElement.style.setProperty("--accent", accent);
-    document.documentElement.style.setProperty("--ui-scale", String(Number.parseInt(String(settings.uiScale ?? "100%"), 10) / 100));
-  }, [accent, appLocale, isDark, settings.uiScale]);
+    root.dataset.glass = settings.glassEffect === false ? "off" : "on";
+    root.dataset.compact = settings.compactMode ? "on" : "off";
+    root.dataset.animation = settings.uiAnimation === false ? "off" : "on";
+    root.dataset.operationHints = settings.operationHints === false ? "off" : "on";
+    root.dataset.shortcutHints = settings.shortcutHints === false ? "off" : "on";
+    root.dataset.cardSpacing = String(settings.cardSpacing ?? "标准");
+    root.dataset.listDensity = String(settings.listDensity ?? "舒适");
+    root.lang = appLocale;
+    root.style.setProperty("--accent", accent);
+    root.style.setProperty("--ui-scale", String(Number.parseInt(String(settings.uiScale ?? "100%"), 10) / 100));
+  }, [
+    accent,
+    appLocale,
+    isDark,
+    settings.cardSpacing,
+    settings.compactMode,
+    settings.glassEffect,
+    settings.listDensity,
+    settings.operationHints,
+    settings.shortcutHints,
+    settings.uiAnimation,
+    settings.uiScale,
+  ]);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -148,7 +187,7 @@ export default function App() {
                 <Route path="connections-window" element={<div className="standalone-window-page"><ConnectionsPage /></div>} />
                 <Route path="connection-detail/:id" element={<ConnectionDetailWindowPage />} />
                 <Route element={<AppShell />}>
-                  <Route index element={<DashboardPage />} />
+                  <Route index element={<DefaultRoute />} />
                   <Route path="proxies" element={<ProxiesPage />} />
                   <Route path="nodes" element={<NodesPage />} />
                   <Route path="subscriptions" element={<SubscriptionsPage />} />

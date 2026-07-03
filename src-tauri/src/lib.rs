@@ -678,18 +678,21 @@ pub fn run() {
         .manage(AppExitState::default())
         .manage(AppMutationState::default())
         .setup(|app| {
-            tray::setup(app.handle())?;
             let snapshot = storage::load_snapshot(app.handle()).unwrap_or_else(|error| {
                 eprintln!("读取启动设置失败，将使用默认设置：{error}");
                 defaults::default_snapshot()
             });
+            let tray_visible = setting_bool(&snapshot.settings, "showTrayIcon", true);
+            if tray_visible {
+                tray::setup(app.handle())?;
+            }
             if let Err(error) = autostart::apply(
                 app.handle(),
                 setting_bool(&snapshot.settings, "launchAtStartup", false),
             ) {
                 eprintln!("同步开机启动设置失败：{error}");
             }
-            if !setting_bool(&snapshot.settings, "silentLaunch", false) {
+            if !setting_bool(&snapshot.settings, "silentLaunch", false) || !tray_visible {
                 if let Some(window) = app.get_webview_window("main") {
                     window.show()?;
                     window.set_focus()?;

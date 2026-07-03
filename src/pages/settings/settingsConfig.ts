@@ -69,24 +69,21 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
     description: "管理 Clash 内核相关配置和行为设置。",
     sections: [
       { title: "内核设置", fields: [
-        { key: "core", label: "选择内核", control: "select", options: ["Clash Meta", "Clash Premium"] },
+        { key: "core", label: "选择内核", control: "select", options: ["Mihomo"] },
         { key: "coreStartTiming", label: "启动核心时机", control: "select", options: ["系统启动时自动运行", "应用打开时运行", "手动启动"] },
         { key: "coreMode", label: "内核工作模式", control: "select", options: ["规则模式", "全局模式", "直连模式"] },
         { key: "ipv6", label: "IPv6 支持", description: "启用后将支持 IPv6 连接与解析", control: "switch" },
       ] },
       { title: "高级设置", fields: [
-        { key: "logLevel", label: "日志级别", control: "select", options: ["调试 (Debug)", "信息 (Info)", "警告 (Warning)", "错误 (Error)"] },
-        { key: "tcpKeepAlive", label: "TCP 保持活动", description: "保持 TCP 连接活动以提高稳定性", control: "switch" },
+        { key: "logLevel", label: "日志级别", control: "select", options: ["Debug", "Info", "Warning", "Error"] },
         { key: "udpForward", label: "UDP 转发", description: "允许内核转发 UDP 流量", control: "switch" },
         { key: "externalController", label: "外部控制地址", description: "用于外部程序控制 Clash 内核", control: "input", placeholder: "127.0.0.1:9090" },
-        { key: "debugPort", label: "内核调试端口", description: "用于内核调试与性能分析", control: "number", min: 1, max: 65535 },
         { key: "configOverride", label: "配置文件覆盖", description: "使用自定义配置路径覆盖当前配置文件", control: "input", placeholder: "选择配置文件" },
       ] },
       { title: "其他选项", fields: [
         { key: "bypassLan", label: "绕过局域网地址", description: "对局域网地址直连不经过代理", control: "switch" },
         { key: "dnsStrategy", label: "域名解析策略", control: "select", options: ["使用内核 (Fake-IP)", "使用系统 DNS", "Redir-Host"] },
         { key: "bypassChina", label: "绕过中国大陆地址", description: "对中国大陆地址直连不经过代理", control: "switch" },
-        { key: "etag", label: "ETag 支持", description: "启用后支持 HTTP ETag 缓存验证", control: "switch" },
       ] },
     ],
   },
@@ -120,7 +117,6 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "maxConnections", label: "连接并发限制", control: "number", min: 0, max: 9999 },
       ] },
       { title: "连接优化", fields: [
-        { key: "tcpKeepAlive", label: "TCP KeepAlive", control: "switch" },
         { key: "bypassMainland", label: "绕过大陆地址", control: "switch" },
         { key: "udpForward", label: "UDP 转发", control: "switch" },
         { key: "bypassLan", label: "绕过局域网地址", control: "switch" },
@@ -141,7 +137,7 @@ export const settingDefinitions: Record<string, SettingPageDefinition> = {
         { key: "glassEffect", label: "毛玻璃效果", control: "switch" },
       ] },
       { title: "布局与导航", fields: [
-        { key: "defaultPage", label: "默认启动页", control: "select", options: ["总览", "代理", "订阅", "连接"] },
+        { key: "defaultPage", label: "默认启动页", control: "select", options: ["总览", "代理", "节点", "订阅", "规则", "连接", "日志", "设置"] },
         { key: "cardSpacing", label: "卡片间距", control: "select", options: ["紧凑", "标准", "宽松"] },
         { key: "navCollapsed", label: "侧边栏折叠", control: "switch" },
         { key: "listDensity", label: "列表密度", control: "select", options: ["紧凑", "舒适", "宽松"] },

@@ -140,7 +140,7 @@ export function SettingsPage() {
               ))}
             </>
           )}
-          <SettingsFooter section={activeSection} lastSaved={lastSaved} />
+          {settings.showStatusFooter !== false && <SettingsFooter section={activeSection} lastSaved={lastSaved} />}
         </div>
       </div>
     </div>
@@ -191,6 +191,7 @@ function OverrideSettings() {
   const [scope, setScope] = useState<OverrideScope>("domain");
   const [editing, setEditing] = useState<OverrideItem | null>(null);
   const [form] = Form.useForm<OverrideItem>();
+  const operation = Form.useWatch("operation", form);
 
   const openModal = (nextScope: OverrideScope, item?: OverrideItem) => {
     setScope(nextScope);
@@ -201,11 +202,23 @@ function OverrideSettings() {
 
   const saveOverride = async () => {
     const values = await form.validateFields();
-    const item = { ...values, id: editing?.id ?? crypto.randomUUID() };
+    const item = {
+      ...values,
+      id: editing?.id ?? crypto.randomUUID(),
+      match: values.match.trim(),
+      field: values.field?.trim() ?? "",
+      value: values.value?.trim() ?? "",
+      strategy: values.strategy?.trim() ?? "",
+    };
     if (editing) updateOverride(scope, item); else addOverride(scope, item);
     setModalOpen(false);
     message.success(editing ? "覆写规则已保存" : "覆写规则已添加");
   };
+
+  const operationOptions = scope === "domain"
+    ? ["设置", "删除", "Hosts", "重定向", "阻止", "策略"]
+    : ["设置", "删除"];
+  const valueRequired = operation !== "删除";
 
   const renderSection = (title: string, currentScope: OverrideScope, data: OverrideItem[]) => {
     const columns: TableColumnsType<OverrideItem> = [
@@ -230,9 +243,9 @@ function OverrideSettings() {
           <div className="form-grid two-columns">
             <Form.Item label="匹配类型" name="matchType" rules={[{ required: true }]}><Select options={["域名", "域名通配符", "正则表达式"].map((value) => ({ label: value, value }))} /></Form.Item>
             <Form.Item label="匹配内容" name="match" rules={[{ required: true, message: "请输入匹配内容" }]}><Input placeholder="例如：*.example.com" /></Form.Item>
-            <Form.Item label="操作" name="operation"><Select options={["设置", "删除", "Hosts", "重定向", "阻止", "策略"].map((value) => ({ label: value, value }))} /></Form.Item>
-            <Form.Item label={scope === "domain" ? "目标字段" : scope === "request" ? "请求头" : "响应头"} name="field"><Input /></Form.Item>
-            <Form.Item label="值" name="value" rules={[{ required: true, message: "请输入覆写值" }]}><Input /></Form.Item>
+            <Form.Item label="操作" name="operation"><Select options={operationOptions.map((value) => ({ label: value, value }))} /></Form.Item>
+            <Form.Item label={scope === "domain" ? "目标字段" : scope === "request" ? "请求头" : "响应头"} name="field" rules={scope === "domain" ? [] : [{ required: true, message: "请输入头字段名" }]}><Input /></Form.Item>
+            <Form.Item label="值" name="value" rules={valueRequired ? [{ required: true, message: "请输入覆写值" }] : []}><Input disabled={!valueRequired} /></Form.Item>
             <Form.Item label="策略" name="strategy"><Input /></Form.Item>
             <Form.Item label="启用" name="enabled" valuePropName="checked"><Switch /></Form.Item>
           </div>

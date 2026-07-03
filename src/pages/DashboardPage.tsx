@@ -3,14 +3,15 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   DashboardOutlined,
+  PlayCircleOutlined,
   WifiOutlined,
 } from "@ant-design/icons";
-import { Flex, Radio, Switch, Typography } from "antd";
+import { Button, Flex, Radio, Switch, Typography, message } from "antd";
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis, type TooltipContentProps } from "recharts";
 import { useAppStore } from "../store/useAppStore";
-import { getLanIp } from "../backend/api";
+import { getLanIp, startMihomoCore } from "../backend/api";
 import { CompactCopy, Panel, StatusDot } from "../components/Common";
-import { TunServiceControl } from "../components/TunServiceControl";
+import { getEffectiveTunSettings, TunServiceControl, useTunService } from "../components/TunServiceControl";
 import { buildTrafficChartData, type TrafficRange } from "../utils/trafficHistory";
 
 const { Text, Title } = Typography;
@@ -67,6 +68,7 @@ function TrafficChartTooltip({ active, label, payload }: TooltipContentProps) {
 export function DashboardPage() {
   const [range, setRange] = useState<TrafficRange>("24h");
   const [lanIp, setLanIp] = useState("...");
+  const [startingCore, setStartingCore] = useState(false);
   useEffect(() => {
     getLanIp().then(setLanIp).catch(console.error);
   }, []);
@@ -77,8 +79,11 @@ export function DashboardPage() {
     runtime,
     settings,
     trafficHistory,
+    refreshRuntimeData,
+    testAutoProxyGroups,
     updateSetting,
   } = useAppStore();
+  const { status: tunServiceStatus } = useTunService();
   const realtimeTraffic = {
     download: { total: runtime.downloadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
     upload: { total: runtime.uploadTotal, share: runtime.controllerConnected ? "50%" : "0%" },
@@ -107,6 +112,20 @@ export function DashboardPage() {
   };
   const showAllTrafficSeries = () => setHiddenTrafficSeries({});
   const hideAllTrafficSeries = () => setHiddenTrafficSeries(Object.fromEntries(trafficSeriesKeys.map((key) => [key, true])));
+  const startCore = async () => {
+    setStartingCore(true);
+    try {
+      const result = await startMihomoCore(getEffectiveTunSettings(settings, tunServiceStatus));
+      if (!result.controllerReady) throw new Error(result.message);
+      await refreshRuntimeData();
+      if (settings.connectNearest) await testAutoProxyGroups();
+      message.success("Mihomo 内核已启动并刷新运行状态");
+    } catch (error) {
+      message.error({ content: `Mihomo 内核启动失败：${String(error)}`, duration: 6 });
+    } finally {
+      setStartingCore(false);
+    }
+  };
 
   return (
     <div className="dashboard-page page-stack">
@@ -115,6 +134,7 @@ export function DashboardPage() {
           <Panel
             className="connection-overview"
             title={<Flex align="center" gap={18}><Title level={3}>网络连接</Title><StatusDot status={connected ? "success" : "default"}>{connected ? "已连接" : "已暂停"}</StatusDot></Flex>}
+            extra={<Button icon={<PlayCircleOutlined />} loading={startingCore} onClick={() => void startCore()}>启动内核</Button>}
           >
             <div className="connection-summary">
               <div className="connection-main">

@@ -25,7 +25,7 @@ const SERVICE_NAME: &str = "ClashMgTunService";
 #[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.clashmg.tun-service";
 const SERVICE_PORT: u16 = 47892;
-const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.10");
+const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.11");
 const CLIENT_CONFIG_NAME: &str = "tun-service.json";
 const RUNTIME_STATE_NAME: &str = "runtime-state.json";
 const MAX_REQUEST_BYTES: u64 = 48 * 1024 * 1024;
@@ -100,6 +100,10 @@ struct TunServiceRequest {
     #[serde(default)]
     rotate_logs: Option<bool>,
     #[serde(default)]
+    clear_old_logs: Option<bool>,
+    #[serde(default)]
+    log_retention_days: Option<u64>,
+    #[serde(default)]
     override_system_dns: Option<bool>,
 }
 
@@ -119,6 +123,14 @@ struct TunLogOptions {
     enabled: bool,
     max_bytes: u64,
     rotate: bool,
+    #[serde(default)]
+    clear_old: bool,
+    #[serde(default = "default_log_retention_days")]
+    retention_days: u64,
+}
+
+fn default_log_retention_days() -> u64 {
+    7
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -232,6 +244,8 @@ pub fn status(app: &AppHandle) -> Result<TunServiceStatus, String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            clear_old_logs: None,
+            log_retention_days: None,
             override_system_dns: None,
         },
     ) {
@@ -362,6 +376,8 @@ pub fn reconcile_core_network(app: &AppHandle) -> Result<(), String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            clear_old_logs: None,
+            log_retention_days: None,
             override_system_dns: None,
         },
     )?;
@@ -399,6 +415,8 @@ fn runtime_request(
         log_enabled: Some(log_options.enabled),
         log_max_bytes: Some(log_options.max_bytes),
         rotate_logs: Some(log_options.rotate),
+        clear_old_logs: Some(log_options.clear_old),
+        log_retention_days: Some(log_options.retention_days),
         override_system_dns: Some(
             settings
                 .get("overrideSystemDns")
@@ -424,6 +442,8 @@ pub fn stop_core(app: &AppHandle) -> Result<(), String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            clear_old_logs: None,
+            log_retention_days: None,
             override_system_dns: None,
         },
     )?;
@@ -450,6 +470,8 @@ pub fn read_core_log(app: &AppHandle) -> Result<String, String> {
             log_enabled: None,
             log_max_bytes: None,
             rotate_logs: None,
+            clear_old_logs: None,
+            log_retention_days: None,
             override_system_dns: None,
         },
     )?;
@@ -712,6 +734,8 @@ fn handle_request(
         enabled: request.log_enabled.unwrap_or(true),
         max_bytes: request.log_max_bytes.unwrap_or(10 * 1024 * 1024),
         rotate: request.rotate_logs.unwrap_or(true),
+        clear_old: request.clear_old_logs.unwrap_or(false),
+        retention_days: request.log_retention_days.unwrap_or(7).max(1),
     };
     match request.action.as_str() {
         "status" => Ok(TunServiceResponse {
@@ -871,6 +895,8 @@ fn spawn_managed_core(
         path: daemon_config.data_dir.join("core.log"),
         rotate: state.log.rotate,
         max_bytes: state.log.max_bytes,
+        clear_old: state.log.clear_old,
+        retention_days: state.log.retention_days,
     };
     let (log_file_out, log_file_err) = core_log::open_log_stdio(&log_options)?;
 

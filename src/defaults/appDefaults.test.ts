@@ -18,4 +18,8 @@ describe("应用默认状态", () => {
     expect(defaultSettings.externalController).toBe("127.0.0.1:9090");
     expect(defaultSettings.controllerPort).toBe(9090);
   });
+
+  it("默认随应用打开拉起 Mihomo，确保系统代理具备可用内核", () => {
+    expect(defaultSettings.coreStartTiming).toBe("应用打开时运行");
+  });
 });

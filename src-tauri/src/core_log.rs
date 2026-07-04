@@ -125,10 +125,14 @@ fn cleanup_old_logs(options: &CoreLogOptions) -> Result<(), String> {
         return Ok(());
     };
     let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(options.retention_days.saturating_mul(24 * 60 * 60)))
+        .checked_sub(Duration::from_secs(
+            options.retention_days.saturating_mul(24 * 60 * 60),
+        ))
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    for entry in fs::read_dir(directory).map_err(|error| format!("扫描旧 Mihomo 日志失败：{error}"))? {
+    for entry in
+        fs::read_dir(directory).map_err(|error| format!("扫描旧 Mihomo 日志失败：{error}"))?
+    {
         let entry = entry.map_err(|error| format!("读取旧 Mihomo 日志条目失败：{error}"))?;
         let path = entry.path();
         if path == options.path || !path.is_file() {
@@ -144,9 +148,8 @@ fn cleanup_old_logs(options: &CoreLogOptions) -> Result<(), String> {
             continue;
         };
         if modified < cutoff {
-            fs::remove_file(&path).map_err(|error| {
-                format!("删除旧 Mihomo 日志“{}”失败：{error}", path.display())
-            })?;
+            fs::remove_file(&path)
+                .map_err(|error| format!("删除旧 Mihomo 日志“{}”失败：{error}", path.display()))?;
         }
     }
     Ok(())
@@ -306,13 +309,16 @@ mod tests {
             "time=\"2026-06-29T16:00:00+08:00\" level=info msg=\"connected\"\n",
             "time=\"2026-06-29T16:00:01+08:00\" level=warning msg=\"dial failed\"\n",
             "time=\"2026-06-29T16:00:02+08:00\" level=error msg=\"DNS failed\"\n",
+            "time=\"2026-06-29T16:00:03+08:00\" level=fatal msg=\"Parse config error\"\n",
         );
         let entries = failure_entries(content, 10);
 
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].level, "ERROR");
-        assert_eq!(entries[0].content, "DNS failed");
-        assert_eq!(entries[1].level, "WARNING");
+        assert_eq!(entries[0].content, "Parse config error");
+        assert_eq!(entries[1].level, "ERROR");
+        assert_eq!(entries[1].content, "DNS failed");
+        assert_eq!(entries[2].level, "WARNING");
     }
 
     #[test]

@@ -20,7 +20,7 @@ export const defaultSettings: AppSettings = {
   controllerPort: 9090,
   maxConnections: 32,
   core: "Mihomo",
-  coreStartTiming: "手动启动",
+  coreStartTiming: "应用打开时运行",
   coreMode: "规则模式",
   logLevel: "Info",
   udpForward: true,

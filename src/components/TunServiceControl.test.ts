@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getEffectiveTunSettings,
   isTunServiceAvailable,
+  isTunServiceRepairRequired,
   isTunSwitchLoading,
 } from "./TunServiceControl";
 
@@ -11,6 +12,16 @@ describe("isTunServiceAvailable", () => {
     expect(isTunServiceAvailable({ installed: false, running: false, versionCompatible: false })).toBe(false);
     expect(isTunServiceAvailable({ installed: true, running: false, versionCompatible: false })).toBe(false);
     expect(isTunServiceAvailable({ installed: true, running: false, versionCompatible: true, message: "服务离线" })).toBe(false);
+  });
+});
+
+describe("isTunServiceRepairRequired", () => {
+  it("已安装但版本不匹配、服务不可用或内核未运行时进入修复流程，而不是删除流程", () => {
+    expect(isTunServiceRepairRequired({ installed: true, running: false, versionCompatible: false })).toBe(true);
+    expect(isTunServiceRepairRequired({ installed: true, running: false, versionCompatible: true, message: "服务离线" })).toBe(true);
+    expect(isTunServiceRepairRequired({ installed: true, running: false, versionCompatible: true })).toBe(true);
+    expect(isTunServiceRepairRequired({ installed: true, running: true, versionCompatible: true })).toBe(false);
+    expect(isTunServiceRepairRequired({ installed: false, running: false, versionCompatible: false })).toBe(false);
   });
 });
 

@@ -20,6 +20,10 @@ export function isTunServiceAvailable(status: TunServiceStatus) {
   return status.installed && status.versionCompatible && !status.message;
 }
 
+export function isTunServiceRepairRequired(status: TunServiceStatus) {
+  return status.installed && (!isTunServiceAvailable(status) || !status.running);
+}
+
 export function getEffectiveTunSettings(
   settings: AppSettings,
   status: TunServiceStatus,
@@ -80,6 +84,9 @@ export function TunServiceProvider({ children }: { children: React.ReactNode }) 
     try {
       const next = await installTunService();
       setStatus(next);
+      if (!isTunServiceAvailable(next) || !next.running) {
+        throw new Error(next.message ?? "Mihomo 系统服务未能拉起内核进程");
+      }
       message.success("Mihomo 系统服务安装成功，内核已切换为 root 运行");
     } catch (error) {
       message.error({ content: `安装 Mihomo 系统服务失败：${String(error)}`, duration: 6 });
@@ -142,10 +149,15 @@ export function TunServiceControl({
 }) {
   const { status, checking, busy, switching, install, uninstall, toggleTun } = useTunService();
   const available = isTunServiceAvailable(status);
-  const serviceActionLabel = status.installed ? "删除 Mihomo 系统服务" : "安装 Mihomo 系统服务";
+  const repairRequired = isTunServiceRepairRequired(status);
+  const serviceActionLabel = repairRequired
+    ? "修复 Mihomo 系统服务"
+    : status.installed
+      ? "删除 Mihomo 系统服务"
+      : "安装 Mihomo 系统服务";
 
   const handleServiceAction = () => {
-    if (!status.installed) {
+    if (!status.installed || repairRequired) {
       void install();
       return;
     }
@@ -171,8 +183,11 @@ export function TunServiceControl({
       </Typography.Paragraph>
       <Typography.Text type="secondary">
         {status.installed
-          ? status.message ?? `服务已安装${status.serviceVersion ? ` · v${status.serviceVersion}` : ""}`
-          : "服务尚未安装，TUN 开关当前不可用。删除或修复服务时系统可能再次请求管理员权限。"}
+          ? status.message
+            ?? (status.running
+              ? `服务已安装${status.serviceVersion ? ` · v${status.serviceVersion}` : ""}`
+              : `服务已安装但内核未运行，点击扳手可重新拉起${status.serviceVersion ? ` · v${status.serviceVersion}` : ""}`)
+          : status.message ?? "服务尚未安装，TUN 开关当前不可用。删除或修复服务时系统可能再次请求管理员权限。"}
       </Typography.Text>
     </div>
   );
@@ -188,9 +203,9 @@ export function TunServiceControl({
       />
       <Button
         type="text"
-        danger={status.installed}
+        danger={status.installed && !repairRequired}
         disabled={checking || busy || switching}
-        icon={busy ? <LoadingOutlined spin /> : status.installed ? <DeleteOutlined /> : <ToolOutlined />}
+        icon={busy ? <LoadingOutlined spin /> : status.installed && !repairRequired ? <DeleteOutlined /> : <ToolOutlined />}
         onClick={handleServiceAction}
         aria-label={serviceActionLabel}
         title={serviceActionLabel}

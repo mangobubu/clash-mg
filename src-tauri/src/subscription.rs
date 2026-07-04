@@ -32,6 +32,8 @@ const SUBSCRIPTION_USER_AGENT: &str = "mihomo/1.19 clash-mg/0.1";
 const SUBSCRIPTION_DIR_NAME: &str = "subscriptions";
 const ACTIVE_CONFIG_NAME: &str = "config.yaml";
 const CANDIDATE_CONFIG_NAME: &str = "config.candidate.yaml";
+const DEFAULT_PROXY_DNS: &[&str] = &["tls://1.1.1.1", "https://dns.google/dns-query"];
+const DEFAULT_DIRECT_DNS: &[&str] = &["223.5.5.5", "119.29.29.29"];
 const SHARE_LINK_SCHEMES: [&str; 9] = [
     "ss://",
     "ssr://",
@@ -909,10 +911,14 @@ fn apply_bypass_rules(rules: &mut Vec<Value>, snapshot: &AppSnapshot) {
         );
 
         bypass_rules.extend(
-            split_setting_list(&setting_string(settings, "domainWhitelist", "*.lan, localhost, *.local"))
-                .into_iter()
-                .filter_map(|domain| bypass_domain_rule(&domain))
-                .map(Value::String),
+            split_setting_list(&setting_string(
+                settings,
+                "domainWhitelist",
+                "*.lan, localhost, *.local",
+            ))
+            .into_iter()
+            .filter_map(|domain| bypass_domain_rule(&domain))
+            .map(Value::String),
         );
     }
 
@@ -1128,31 +1134,28 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
     );
     dns.insert(
         key("default-nameserver"),
-        setting_string_sequence(settings, "defaultDns", &["223.5.5.5", "119.29.29.29"]),
+        setting_string_sequence(settings, "defaultDns", DEFAULT_DIRECT_DNS),
     );
     let dns_policy = setting_string(settings, "dnsPolicy", "优先使用代理 DNS");
-    let mut nameservers = setting_string_values(
-        settings,
-        "proxyDns",
-        &["tls://1.1.1.1", "https://dns.google/dns-query"],
-    );
-    let direct_nameservers =
-        setting_string_values(settings, "directDns", &["223.5.5.5", "119.29.29.29"]);
+    let mut nameservers = setting_string_values(settings, "proxyDns", DEFAULT_PROXY_DNS);
+    let direct_nameservers = setting_string_values(settings, "directDns", DEFAULT_DIRECT_DNS);
     if dns_policy == "并发查询" {
         append_missing_values(&mut nameservers, direct_nameservers.clone());
     }
-    dns.insert(
-        key("nameserver"),
-        Value::Sequence(nameservers),
-    );
+    let proxy_server_nameservers = nameservers.clone();
+    dns.insert(key("nameserver"), Value::Sequence(nameservers));
     dns.insert(
         key("direct-nameserver"),
         Value::Sequence(direct_nameservers),
     );
-    dns.insert(
-        key("respect-rules"),
-        Value::Bool(setting_bool(settings, "followRules", true) || dns_policy == "遵循规则"),
-    );
+    let respect_rules = setting_bool(settings, "followRules", true) || dns_policy == "遵循规则";
+    dns.insert(key("respect-rules"), Value::Bool(respect_rules));
+    if respect_rules {
+        dns.insert(
+            key("proxy-server-nameserver"),
+            Value::Sequence(proxy_server_nameservers),
+        );
+    }
     dns.insert(
         key("fallback"),
         setting_string_sequence(settings, "fallbackDns", &["1.0.0.1", "8.8.8.8"]),
@@ -1197,7 +1200,9 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
     } else {
         dns.remove(key("cache-algorithm"));
     }
-    if let Some(policy) = parse_nameserver_policy(&setting_string(settings, "nameServerPolicy", ""))? {
+    if let Some(policy) =
+        parse_nameserver_policy(&setting_string(settings, "nameServerPolicy", ""))?
+    {
         dns.insert(key("nameserver-policy"), Value::Mapping(policy));
     } else {
         dns.remove(key("nameserver-policy"));
@@ -1210,7 +1215,11 @@ fn apply_runtime_settings(root: &mut Mapping, settings: &SettingsMap) -> Result<
         .collect::<Vec<_>>();
     append_missing_strings(
         &mut fake_ip_filter,
-        split_setting_list(&setting_string(settings, "domainWhitelist", "*.lan, localhost, *.local")),
+        split_setting_list(&setting_string(
+            settings,
+            "domainWhitelist",
+            "*.lan, localhost, *.local",
+        )),
     );
     dns.insert(
         key("fake-ip-filter"),
@@ -1334,6 +1343,8 @@ fn setting_string_values(settings: &SettingsMap, name: &str, fallback: &[&str]) 
             values
                 .iter()
                 .filter_map(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
                 .map(|value| Value::String(value.to_string()))
                 .collect::<Vec<_>>()
         })
@@ -1375,7 +1386,9 @@ fn parse_nameserver_policy(raw: &str) -> Result<Option<Mapping>, String> {
     let mut policy = Mapping::new();
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
         let Some((matcher, value)) = line.split_once(',') else {
-            return Err(format!("nameserver-policy 条目“{line}”必须使用 匹配器, 值 格式"));
+            return Err(format!(
+                "nameserver-policy 条目“{line}”必须使用 匹配器, 值 格式"
+            ));
         };
         let matcher = matcher.trim();
         let value = value.trim();
@@ -2893,16 +2906,56 @@ mod tests {
                 .and_then(Value::as_str),
             Some("198.18.0.0/16")
         );
-        assert!(root
+        let dns = root
             .get(key("dns"))
             .and_then(Value::as_mapping)
-            .and_then(|dns| dns.get(key("enable")))
+            .expect("应包含 DNS 配置");
+        assert!(dns
+            .get(key("enable"))
             .and_then(Value::as_bool)
             .unwrap_or(false));
+        assert_eq!(
+            dns.get(key("respect-rules")).and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            dns.get(key("proxy-server-nameserver"))
+                .and_then(Value::as_sequence)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            Some("tls://1.1.1.1")
+        );
         assert!(root.get(key("sniffer")).is_none());
         assert_eq!(
             rules.first().and_then(Value::as_str),
             Some("MATCH,自动选择")
+        );
+    }
+
+    #[test]
+    fn fills_proxy_server_nameserver_when_respect_rules_is_enabled() {
+        let mut settings = crate::defaults::default_settings();
+        settings.insert("followRules".into(), serde_json::json!(true));
+        settings.insert(
+            "proxyDns".into(),
+            serde_json::json!(["  ", "https://dns.example/dns-query"]),
+        );
+        let mut root = Mapping::new();
+
+        apply_runtime_settings(&mut root, &settings).expect("应生成 DNS 配置");
+
+        let dns = root
+            .get(key("dns"))
+            .and_then(Value::as_mapping)
+            .expect("应包含 DNS 配置");
+        let proxy_server_nameserver = dns
+            .get(key("proxy-server-nameserver"))
+            .and_then(Value::as_sequence)
+            .expect("开启 respect-rules 时必须补齐 proxy-server-nameserver");
+        assert_eq!(proxy_server_nameserver.len(), 1);
+        assert_eq!(
+            proxy_server_nameserver.first().and_then(Value::as_str),
+            Some("https://dns.example/dns-query")
         );
     }
 

@@ -145,11 +145,16 @@ pub async fn start_core(
     }
 
     let controller_ready = wait_controller_ready(settings).await;
+    let failure_detail = (!controller_ready)
+        .then(|| recent_core_failure_detail(&app, settings, service_available))
+        .flatten();
     Ok(MihomoCoreLaunchResult {
         started: true,
         controller_ready,
         message: if controller_ready {
             "Mihomo 已启动，控制器已就绪".into()
+        } else if let Some(failure_detail) = failure_detail {
+            format!("已尝试启动 Mihomo，但控制器尚未就绪：{failure_detail}")
         } else {
             "已尝试启动 Mihomo，但控制器尚未就绪，请检查配置文件和端口占用".into()
         },
@@ -157,7 +162,26 @@ pub async fn start_core(
 }
 
 fn service_is_available(status: &tun_service::TunServiceStatus) -> bool {
-    status.installed && status.version_compatible && status.message.is_none()
+    status.is_available()
+}
+
+fn recent_core_failure_detail(
+    app: &AppHandle,
+    settings: &SettingsMap,
+    service_available: bool,
+) -> Option<String> {
+    let content = if service_available {
+        tun_service::read_core_log(app).ok()
+    } else {
+        let app_data_dir = app.path().app_data_dir().ok()?;
+        let options = core_log::options_from_settings(&app_data_dir, settings);
+        options
+            .enabled
+            .then(|| core_log::read_log_tail(&options.path, core_log::LOG_TAIL_MAX_BYTES).ok())
+            .flatten()
+    }?;
+    let entry = core_log::failure_entries(&content, 1).into_iter().next()?;
+    Some(format!("最近 Mihomo {}：{}", entry.level, entry.content))
 }
 
 async fn migrate_to_service(

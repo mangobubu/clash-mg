@@ -30,7 +30,7 @@ pub fn default_settings() -> SettingsMap {
         ("controllerPort".into(), json!(9090)),
         ("maxConnections".into(), json!(32)),
         ("core".into(), json!("Mihomo")),
-        ("coreStartTiming".into(), json!("手动启动")),
+        ("coreStartTiming".into(), json!("应用打开时运行")),
         ("coreMode".into(), json!("规则模式")),
         ("logLevel".into(), json!("Info")),
         ("udpForward".into(), json!(true)),
@@ -234,6 +234,16 @@ mod tests {
         assert_eq!(
             settings.get("systemDnsOverrideDefaultV2"),
             Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn defaults_to_starting_core_when_app_opens() {
+        let settings = default_settings();
+
+        assert_eq!(
+            settings.get("coreStartTiming"),
+            Some(&json!("应用打开时运行"))
         );
     }
 }

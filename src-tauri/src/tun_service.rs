@@ -25,7 +25,7 @@ const SERVICE_NAME: &str = "ClashMgTunService";
 #[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.clashmg.tun-service";
 const SERVICE_PORT: u16 = 47892;
-const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.11");
+const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-service.12");
 const CLIENT_CONFIG_NAME: &str = "tun-service.json";
 const RUNTIME_STATE_NAME: &str = "runtime-state.json";
 const MAX_REQUEST_BYTES: u64 = 48 * 1024 * 1024;
@@ -36,6 +36,12 @@ const CORE_RUNTIME_FILE_NAMES: &[&str] =
     &["Country.mmdb", "geoip.metadb", "geosite.dat", "geoip.dat"];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+#[cfg(windows)]
+const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
+#[cfg(windows)]
+const ERROR_SERVICE_MARKED_FOR_DELETE: i32 = 1072;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +79,10 @@ impl TunServiceStatus {
             service_version: None,
             message: None,
         }
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.installed && self.version_compatible && self.message.is_none()
     }
 }
 
@@ -219,8 +229,9 @@ pub fn try_run_cli() -> Option<i32> {
 }
 
 pub fn status(app: &AppHandle) -> Result<TunServiceStatus, String> {
+    let registered = platform_service_registered();
     let Some(config) = read_client_config(app)? else {
-        if platform_service_registered() {
+        if registered {
             return Ok(TunServiceStatus {
                 installed: true,
                 running: false,
@@ -231,6 +242,16 @@ pub fn status(app: &AppHandle) -> Result<TunServiceStatus, String> {
         }
         return Ok(TunServiceStatus::not_installed());
     };
+
+    if !registered {
+        return Ok(TunServiceStatus {
+            installed: false,
+            running: false,
+            version_compatible: false,
+            service_version: Some(config.version),
+            message: Some("检测到旧版 TUN 服务状态残留，重新安装会自动修复".into()),
+        });
+    }
 
     match send_request(
         &config,
@@ -268,7 +289,7 @@ pub fn status(app: &AppHandle) -> Result<TunServiceStatus, String> {
 
 pub fn install(app: &AppHandle) -> Result<TunServiceStatus, String> {
     let current = status(app)?;
-    if current.installed && current.version_compatible {
+    if current.is_available() {
         return Ok(current);
     }
 
@@ -294,10 +315,7 @@ pub fn install(app: &AppHandle) -> Result<TunServiceStatus, String> {
 
     for _ in 0..30 {
         let service_status = status(app)?;
-        if service_status.installed
-            && service_status.version_compatible
-            && service_status.message.is_none()
-        {
+        if service_status.is_available() {
             return Ok(service_status);
         }
         thread::sleep(Duration::from_millis(200));
@@ -1059,6 +1077,9 @@ fn install_elevated(client_config_path: &Path, source_core: &Path) -> Result<(),
     if client.version != SERVICE_VERSION || client.port != SERVICE_PORT {
         return Err("待安装服务配置与当前应用版本不一致".into());
     }
+    unregister_platform_service()?;
+    restore_system_dns()?;
+
     let source_executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let executable = service_executable_path();
     let core_path = service_core_path();
@@ -1067,6 +1088,7 @@ fn install_elevated(client_config_path: &Path, source_core: &Path) -> Result<(),
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    clear_persisted_runtime_bootstrap(&data_dir)?;
     fs::copy(source_executable, &executable)
         .map_err(|error| format!("安装 TUN 服务程序失败：{error}"))?;
     fs::copy(source_core, &core_path)
@@ -1094,6 +1116,22 @@ fn install_elevated(client_config_path: &Path, source_core: &Path) -> Result<(),
     #[cfg(unix)]
     protect_unix_service_directory()?;
     register_platform_service(&executable)
+}
+
+fn clear_persisted_runtime_bootstrap(data_dir: &Path) -> Result<(), String> {
+    remove_file_if_exists(&data_dir.join("config.yaml"), "清理旧版 Mihomo 常驻配置")?;
+    remove_file_if_exists(
+        &data_dir.join(RUNTIME_STATE_NAME),
+        "清理旧版 Mihomo 常驻状态",
+    )
+}
+
+fn remove_file_if_exists(path: &Path, action: &str) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("{action}失败：{error}")),
+    }
 }
 
 #[cfg(unix)]
@@ -1137,16 +1175,35 @@ fn protect_windows_service_directory() -> Result<(), String> {
 }
 
 fn uninstall_elevated() -> Result<(), String> {
-    unregister_platform_service()?;
-    restore_system_dns()?;
+    let mut errors = Vec::new();
+
+    if let Err(error) = unregister_platform_service() {
+        errors.push(error);
+    }
+    if let Err(error) = restore_system_dns() {
+        errors.push(error);
+    }
+    if let Err(error) = remove_service_install_dir_with_retry() {
+        errors.push(error);
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+fn remove_service_install_dir_with_retry() -> Result<(), String> {
     let directory = service_install_dir();
-    for attempt in 0..20 {
+    for attempt in 0..40 {
         if !directory.exists() {
             return Ok(());
         }
         match fs::remove_dir_all(&directory) {
             Ok(()) => return Ok(()),
-            Err(_) if attempt < 19 => thread::sleep(Duration::from_millis(200)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) if attempt < 39 => thread::sleep(Duration::from_millis(500)),
             Err(error) => return Err(format!("删除系统服务文件失败：{error}")),
         }
     }
@@ -1488,34 +1545,145 @@ fn register_platform_service(executable: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn unregister_platform_service() -> Result<(), String> {
-    if !platform_service_registered() {
-        return Ok(());
-    }
-    let _ = Command::new("sc.exe").args(["stop", SERVICE_NAME]).status();
-    for _ in 0..30 {
-        let output = Command::new("sc.exe")
-            .args(["query", SERVICE_NAME])
-            .output();
-        if output
-            .as_ref()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("STOPPED"))
-        {
-            break;
+    use windows_service::service::ServiceAccess;
+
+    let service = match open_windows_tun_service(
+        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+    ) {
+        Ok(service) => service,
+        Err(error) if windows_service_removed_or_deleting(&error) => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "打开 Windows TUN 服务失败：{}",
+                windows_service_error_message(&error)
+            ))
         }
-        thread::sleep(Duration::from_millis(200));
-    }
-    run_checked(
-        Command::new("sc.exe").args(["delete", SERVICE_NAME]),
-        "删除 Windows TUN 服务",
-    )
+    };
+
+    stop_windows_tun_service(&service)?;
+    delete_windows_tun_service(&service)?;
+    drop(service);
+    wait_windows_tun_service_released();
+    Ok(())
 }
 
 #[cfg(windows)]
 fn platform_service_registered() -> bool {
-    let mut command = Command::new("sc.exe");
-    command.args(["query", SERVICE_NAME]);
-    command.creation_flags(CREATE_NO_WINDOW);
-    command.status().is_ok_and(|status| status.success())
+    use windows_service::service::ServiceAccess;
+
+    open_windows_tun_service(ServiceAccess::QUERY_STATUS).is_ok()
+}
+
+#[cfg(windows)]
+fn open_windows_tun_service(
+    access: windows_service::service::ServiceAccess,
+) -> windows_service::Result<windows_service::service::Service> {
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    manager.open_service(SERVICE_NAME, access)
+}
+
+#[cfg(windows)]
+fn stop_windows_tun_service(service: &windows_service::service::Service) -> Result<(), String> {
+    use windows_service::service::ServiceState;
+
+    match service.query_status() {
+        Ok(status) if status.current_state == ServiceState::Stopped => return Ok(()),
+        Ok(status) if status.current_state == ServiceState::StopPending => {}
+        Ok(_) => {
+            if let Err(error) = service.stop() {
+                if !windows_service_not_running_or_removed(&error) {
+                    return Err(format!(
+                        "停止 Windows TUN 服务失败：{}",
+                        windows_service_error_message(&error)
+                    ));
+                }
+                return Ok(());
+            }
+        }
+        Err(error) if windows_service_removed_or_deleting(&error) => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "查询 Windows TUN 服务状态失败：{}",
+                windows_service_error_message(&error)
+            ));
+        }
+    }
+
+    for _ in 0..80 {
+        match service.query_status() {
+            Ok(status) if status.current_state == ServiceState::Stopped => return Ok(()),
+            Ok(_) => thread::sleep(Duration::from_millis(250)),
+            Err(error) if windows_service_removed_or_deleting(&error) => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "等待 Windows TUN 服务停止失败：{}",
+                    windows_service_error_message(&error)
+                ));
+            }
+        }
+    }
+
+    Err("等待 Windows TUN 服务停止超时，请稍后重试".into())
+}
+
+#[cfg(windows)]
+fn delete_windows_tun_service(service: &windows_service::service::Service) -> Result<(), String> {
+    match service.delete() {
+        Ok(()) => Ok(()),
+        Err(error) if windows_service_removed_or_deleting(&error) => Ok(()),
+        Err(error) => Err(format!(
+            "删除 Windows TUN 服务失败：{}",
+            windows_service_error_message(&error)
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn wait_windows_tun_service_released() {
+    for _ in 0..80 {
+        if !platform_service_registered() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[cfg(windows)]
+fn windows_service_not_running_or_removed(error: &windows_service::Error) -> bool {
+    matches!(
+        windows_service_error_code(error),
+        Some(
+            ERROR_SERVICE_NOT_ACTIVE
+                | ERROR_SERVICE_DOES_NOT_EXIST
+                | ERROR_SERVICE_MARKED_FOR_DELETE
+        )
+    )
+}
+
+#[cfg(windows)]
+fn windows_service_removed_or_deleting(error: &windows_service::Error) -> bool {
+    matches!(
+        windows_service_error_code(error),
+        Some(ERROR_SERVICE_DOES_NOT_EXIST | ERROR_SERVICE_MARKED_FOR_DELETE)
+    )
+}
+
+#[cfg(windows)]
+fn windows_service_error_code(error: &windows_service::Error) -> Option<i32> {
+    match error {
+        windows_service::Error::Winapi(error) => error.raw_os_error(),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn windows_service_error_message(error: &windows_service::Error) -> String {
+    match error {
+        windows_service::Error::Winapi(error) => error.to_string(),
+        _ => error.to_string(),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1556,6 +1724,9 @@ fn unregister_platform_service() -> Result<(), String> {
 }
 
 fn run_checked(command: &mut Command, action: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
     let output = command
         .output()
         .map_err(|error| format!("{action}失败：{error}"))?;
@@ -1715,6 +1886,36 @@ mod windows_service_host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_status_available_requires_registered_compatible_without_error_message() {
+        assert!(TunServiceStatus {
+            installed: true,
+            running: false,
+            version_compatible: true,
+            service_version: Some("当前版本".into()),
+            message: None,
+        }
+        .is_available());
+
+        assert!(!TunServiceStatus {
+            installed: true,
+            running: false,
+            version_compatible: false,
+            service_version: Some("旧版本".into()),
+            message: Some("系统服务版本与应用不一致".into()),
+        }
+        .is_available());
+
+        assert!(!TunServiceStatus {
+            installed: false,
+            running: false,
+            version_compatible: false,
+            service_version: Some("残留状态".into()),
+            message: Some("检测到旧版 TUN 服务状态残留".into()),
+        }
+        .is_available());
+    }
 
     #[test]
     fn accepts_non_tun_service_config_without_requesting_tun_privileges() {

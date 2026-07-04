@@ -388,7 +388,7 @@ async fn rollback_save_effects(
 }
 
 fn service_status_blocks_runtime_rollback(status: &tun_service::TunServiceStatus) -> bool {
-    status.installed && (!status.version_compatible || status.message.is_some())
+    status.installed && !status.is_available()
 }
 
 #[tauri::command]
@@ -542,11 +542,39 @@ async fn install_tun_service(
     let _guard = state.0.lock().await;
     let snapshot = storage::load_snapshot(&app)?;
     let install_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || tun_service::install(&install_app))
-        .await
-        .map_err(|error| format!("安装 Mihomo 系统服务任务失败：{error}"))??;
-    core::start_core(app.clone(), snapshot).await?;
-    tun_service::status(&app)
+    let install_status =
+        tauri::async_runtime::spawn_blocking(move || tun_service::install(&install_app))
+            .await
+            .map_err(|error| format!("安装 Mihomo 系统服务任务失败：{error}"))??;
+    if !install_status.is_available() {
+        return Err(install_status
+            .message
+            .unwrap_or_else(|| "Mihomo 系统服务安装后不可用".into()));
+    }
+
+    let launch_result = core::start_core(app.clone(), snapshot).await?;
+    if !launch_result.controller_ready {
+        let service_status = tun_service::status(&app)?;
+        return Err(format!(
+            "Mihomo 系统服务已安装，但内核未能就绪：{}{}",
+            launch_result.message,
+            service_status
+                .message
+                .map(|message| format!("；服务状态：{message}"))
+                .unwrap_or_default()
+        ));
+    }
+
+    let service_status = tun_service::status(&app)?;
+    if !service_status.is_available() {
+        return Err(service_status
+            .message
+            .unwrap_or_else(|| "Mihomo 系统服务安装后不可用".into()));
+    }
+    if !service_status.running {
+        return Err("Mihomo 系统服务已安装，但未检测到服务托管的 mihomo 进程".into());
+    }
+    Ok(service_status)
 }
 
 #[tauri::command]

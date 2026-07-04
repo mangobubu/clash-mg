@@ -4,6 +4,7 @@ import { Button, Flex, Modal, Typography } from "antd";
 import { startMihomoCore } from "../backend/api";
 import { useAppStore } from "../store/useAppStore";
 import { getEffectiveTunSettings, useTunService } from "./TunServiceControl";
+import { shouldBootstrapMihomoCore } from "../utils/mihomoCoreBootstrap";
 
 export function MihomoCoreBootstrap() {
   const hydrated = useAppStore((state) => state.hydrated);
@@ -44,10 +45,10 @@ export function MihomoCoreBootstrap() {
 
   useEffect(() => {
     if (!hydrated || !backendAvailable || checkingTunService || initializedRef.current) return;
-    if (settings.coreStartTiming === "手动启动") return;
+    if (!shouldBootstrapMihomoCore(settings)) return;
     initializedRef.current = true;
     void prepareCore();
-  }, [backendAvailable, checkingTunService, hydrated, prepareCore, settings.coreStartTiming]);
+  }, [backendAvailable, checkingTunService, hydrated, prepareCore, settings]);
 
   return (
     <Modal

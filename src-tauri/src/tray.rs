@@ -86,9 +86,9 @@ fn minimize_on_close_enabled(settings: &SettingsMap) -> bool {
         .unwrap_or(true);
     tray_visible
         && settings
-        .get("minimizeOnClose")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true)
+            .get("minimizeOnClose")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true)
 }
 
 #[cfg(test)]
